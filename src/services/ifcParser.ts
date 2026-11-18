@@ -148,6 +148,12 @@ export function parseIfcBimFile(
     entities.set(id, { id, type, rawArgs });
   }
 
+  if (entities.size === 0 && !/ISO-10303-21/i.test(ifcText)) {
+    throw new Error(
+      `Invalid IFC BIM file (${filename}): missing ISO-10303-21 STEP/IFC entities.`
+    );
+  }
+
   // Detect millimeter vs meter unit scale
   let unitScale = 1.0;
   if (/IFCSIUNIT\s*\([^)]*\.MILLI\.[^)]*\.METRE\./i.test(ifcText)) {

@@ -8,6 +8,7 @@ import { PLYLoader } from 'three/addons/loaders/PLYLoader.js';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import type {
   DroppedImageAsset,
+  ModelAssetStats,
   MovieBeat,
   StudioMediaAsset,
   TranscriptCue,
@@ -35,8 +36,36 @@ function uid(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 }
 
+function collectModelStats(root: THREE.Object3D, format: string): ModelAssetStats {
+  let meshCount = 0;
+  let vertexCount = 0;
+  const materials = new Set<THREE.Material>();
+
+  root.traverse((child) => {
+    if (child instanceof THREE.Mesh) {
+      meshCount++;
+      const posAttr = child.geometry?.getAttribute?.('position');
+      if (posAttr) {
+        vertexCount += posAttr.count;
+      }
+      if (Array.isArray(child.material)) {
+        child.material.forEach((m) => materials.add(m));
+      } else if (child.material) {
+        materials.add(child.material);
+      }
+    }
+  });
+
+  return {
+    format: format.toUpperCase(),
+    meshCount,
+    materialCount: materials.size,
+    vertexCount,
+  };
+}
+
 /**
- * Normalizes an arbitrary imported 3D Group onto y = 0 at studio tabletop/stage scale (~0.95m max dim)
+ * Normalizes an arbitrary imported 3D Group onto y = 0 at studio tabletop/stage scale (~0.92m max dim)
  * and enables PBR shadow casting/receiving across all child meshes.
  */
 export function normalizeImportedModel(
@@ -53,6 +82,9 @@ export function normalizeImportedModel(
   });
   container.updateMatrixWorld(true);
   const box = new THREE.Box3().setFromObject(container);
+  if (box.isEmpty()) {
+    throw new Error('Model contains no renderable 3D geometry.');
+  }
   const size = box.getSize(new THREE.Vector3());
   const maxDim = Math.max(size.x, size.y, size.z, 0.001);
   const scale = targetSize / maxDim;
@@ -369,14 +401,22 @@ async function parseThreeModelFile(
 
 export async function ingestStudioFile(
   file: File,
-  audioEngine: AudioEngine
+  audioEngine: AudioEngine,
+  onStage?: (stage: string) => void
 ): Promise<StudioMediaAsset> {
   const ext = getFileExt(file.name);
   const mime = file.type || '';
 
-  // 1. 3D Models
+  // 1. 3D Models (GLB / glTF + OBJ / STL / PLY / FBX / DAE)
   if (['glb', 'gltf', 'obj', 'stl', 'ply', 'fbx', 'dae'].includes(ext)) {
+    onStage?.(
+      ext === 'glb' || ext === 'gltf'
+        ? `Parsing ${ext.toUpperCase()} scene & Draco geometry...`
+        : `Parsing ${ext.toUpperCase()} 3D geometry...`
+    );
     const { root, animations } = await parseThreeModelFile(file);
+    onStage?.('Normalizing scale & studio materials...');
+    const stats = collectModelStats(root, ext);
     return {
       id: uid('mdl'),
       category: 'model',
@@ -384,6 +424,7 @@ export async function ingestStudioFile(
       mimeType: mime || `model/${ext}`,
       sizeBytes: file.size,
       createdAt: Date.now(),
+      modelStats: stats,
       animationClipNames: animations.map((a, idx) => a.name || `Clip ${idx + 1}`),
       runtimeModelRoot: root,
       runtimeAnimations: animations,
@@ -392,7 +433,9 @@ export async function ingestStudioFile(
 
   // 2. BIM Architectural IFC
   if (ext === 'ifc') {
+    onStage?.('Reading IFC BIM schema & storeys...');
     const text = await file.text();
+    onStage?.('Constructing 3D architectural BIM solids...');
     const { group, summary } = parseIfcBimFile(text, file.name);
     return {
       id: uid('bim'),
@@ -402,6 +445,7 @@ export async function ingestStudioFile(
       sizeBytes: file.size,
       createdAt: Date.now(),
       bimSummary: summary,
+      modelStats: collectModelStats(group, 'ifc'),
       runtimeModelRoot: group,
     };
   }

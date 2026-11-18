@@ -140,6 +140,22 @@ export interface BimSummary {
   boundingBoxMeters: [number, number, number];
 }
 
+export interface ModelAssetStats {
+  format: string;
+  meshCount: number;
+  materialCount: number;
+  vertexCount: number;
+}
+
+export interface IngestProgressState {
+  active: boolean;
+  currentFile: string;
+  formatLabel: string;
+  stage: string;
+  completed: number;
+  total: number;
+}
+
 export interface StudioMediaAsset {
   id: string;
   category: ImportedAssetCategory;
@@ -156,6 +172,7 @@ export interface StudioMediaAsset {
   transcriptText?: string;
   transcriptCues?: TranscriptCue[];
   bimSummary?: BimSummary;
+  modelStats?: ModelAssetStats;
   animationClipNames?: string[];
   /** Non-serialized live references for 3D / audio instantiation */
   runtimeFileBuffer?: ArrayBuffer;

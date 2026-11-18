@@ -21,6 +21,7 @@ import type {
   EnvironmentLevelId,
   FinishId,
   ImportedAssetCategory,
+  IngestProgressState,
   MovieBeat,
   SamSceneProjectManifest,
   SceneryPropType,
@@ -149,6 +150,12 @@ export class MiniAgentSam {
   private subtitleEl!: HTMLDivElement;
   private toastEl!: HTMLDivElement;
   private dropOverlayEl!: HTMLDivElement;
+  private ingestLoaderEl!: HTMLDivElement;
+  private ingestFormatEl!: HTMLSpanElement;
+  private ingestFileEl!: HTMLElement;
+  private ingestStageEl!: HTMLSpanElement;
+  private ingestCountEl!: HTMLSpanElement;
+  private ingestBarFillEl!: HTMLDivElement;
   private armedBannerEl!: HTMLDivElement;
   private armedBannerTextEl!: HTMLSpanElement;
   private exportMenuEl!: HTMLDivElement;
@@ -193,6 +200,7 @@ export class MiniAgentSam {
   private assetFilter: AssetFilter = 'all';
   private assetSearch = '';
   private savedSlots: SavedProjectSlot[] = [];
+  private ingestProgress: IngestProgressState | null = null;
 
   private selectedDetails: SelectedObjectDetails | null = null;
   private sceneryCount = 0;
@@ -356,6 +364,21 @@ export class MiniAgentSam {
           <button type="button" class="ws-mini-btn" id="wsCancelArmBtn">Cancel (Esc)</button>
         </div>
 
+        <div class="ws-ingest-loader" id="wsIngestLoader" role="status" aria-live="polite" hidden>
+          <div class="ws-spinner" aria-hidden="true"></div>
+          <div class="ws-ingest-meta">
+            <div class="ws-ingest-top">
+              <span class="ws-ingest-badge" id="wsIngestFormat">GLB</span>
+              <strong id="wsIngestFile">Importing asset...</strong>
+              <span class="ws-ingest-count" id="wsIngestCount">1 / 1</span>
+            </div>
+            <span class="ws-ingest-stage" id="wsIngestStage">Parsing 3D scene...</span>
+            <div class="ws-ingest-bar">
+              <div class="ws-ingest-bar-fill" id="wsIngestBarFill" style="width: 30%"></div>
+            </div>
+          </div>
+        </div>
+
         <div class="ws-subtitle" id="wsSubtitle" hidden></div>
         <div class="ws-toast" id="wsToast" hidden></div>
 
@@ -364,8 +387,8 @@ export class MiniAgentSam {
 
       <div class="ws-drop-overlay" id="wsDropOverlay" hidden>
         <div class="ws-drop-overlay-box">
-          <strong>Drop Creative Files into SamScene</strong>
-          <span>Supports .GLB/.GLTF/.OBJ/.STL/.FBX/.DAE • .IFC BIM • .MP4/.WEBM Video • .MP3/.WAV Audio • .SRT/.VTT/.TXT Transcripts • Images • .samscene.json</span>
+          <strong>Drop GLB / glTF, BIM (.ifc) or Studio Media into SamScene</strong>
+          <span>Drop onto the 3D stage to place immediately • .GLB / .GLTF • .IFC BIM • .OBJ/.STL/.FBX • Video • Audio • Transcripts • Images</span>
         </div>
       </div>
     `;
@@ -378,6 +401,12 @@ export class MiniAgentSam {
     this.subtitleEl = this.root.querySelector('#wsSubtitle') as HTMLDivElement;
     this.toastEl = this.root.querySelector('#wsToast') as HTMLDivElement;
     this.dropOverlayEl = this.root.querySelector('#wsDropOverlay') as HTMLDivElement;
+    this.ingestLoaderEl = this.root.querySelector('#wsIngestLoader') as HTMLDivElement;
+    this.ingestFormatEl = this.root.querySelector('#wsIngestFormat') as HTMLSpanElement;
+    this.ingestFileEl = this.root.querySelector('#wsIngestFile') as HTMLElement;
+    this.ingestStageEl = this.root.querySelector('#wsIngestStage') as HTMLSpanElement;
+    this.ingestCountEl = this.root.querySelector('#wsIngestCount') as HTMLSpanElement;
+    this.ingestBarFillEl = this.root.querySelector('#wsIngestBarFill') as HTMLDivElement;
     this.armedBannerEl = this.root.querySelector('#wsArmedBanner') as HTMLDivElement;
     this.armedBannerTextEl = this.root.querySelector('#wsArmedBannerText') as HTMLSpanElement;
     this.exportMenuEl = this.root.querySelector('#wsExportMenu') as HTMLDivElement;
@@ -615,6 +644,40 @@ export class MiniAgentSam {
 
   public setDropOverlayVisible(visible: boolean): void {
     this.dropOverlayEl.hidden = !visible;
+  }
+
+  public setIngestionProgress(state: IngestProgressState | null): void {
+    this.ingestProgress = state && state.active ? state : null;
+    if (!this.ingestProgress) {
+      this.ingestLoaderEl.hidden = true;
+      if (this.activeTab === 'assets') {
+        this.renderBody();
+      }
+      return;
+    }
+
+    this.ingestFormatEl.textContent = this.ingestProgress.formatLabel;
+    this.ingestFileEl.textContent = this.ingestProgress.currentFile;
+    this.ingestStageEl.textContent = this.ingestProgress.stage;
+    this.ingestCountEl.textContent = `${Math.min(
+      this.ingestProgress.completed + 1,
+      Math.max(1, this.ingestProgress.total)
+    )} / ${Math.max(1, this.ingestProgress.total)}`;
+    const pct = Math.min(
+      100,
+      Math.max(
+        18,
+        Math.round(
+          ((this.ingestProgress.completed + 0.5) / Math.max(1, this.ingestProgress.total)) * 100
+        )
+      )
+    );
+    this.ingestBarFillEl.style.width = `${pct}%`;
+    this.ingestLoaderEl.hidden = false;
+
+    if (this.activeTab === 'assets') {
+      this.renderBody();
+    }
   }
 
   public showToast(message: string, durationMs = 3400): void {
@@ -2222,8 +2285,15 @@ export class MiniAgentSam {
               let meta = `${a.category.toUpperCase()} • ${formatBytes(a.sizeBytes)}`;
               if (a.category === 'bim' && a.bimSummary) {
                 meta = `BIM ${a.bimSummary.schema} • ${a.bimSummary.totalElements} elems • ${a.bimSummary.storeys.length} storeys`;
-              } else if (a.category === 'model' && a.animationClipNames?.length) {
-                meta = `3D MODEL • ${a.animationClipNames.length} anim clips • ${formatBytes(a.sizeBytes)}`;
+              } else if (a.category === 'model') {
+                const fmt = a.modelStats?.format || '3D';
+                const parts: string[] = [fmt];
+                if (a.modelStats?.meshCount) parts.push(`${a.modelStats.meshCount} meshes`);
+                if (a.animationClipNames?.length) {
+                  parts.push(`${a.animationClipNames.length} anim clips`);
+                }
+                parts.push(formatBytes(a.sizeBytes));
+                meta = parts.join(' • ');
               } else if (a.category === 'video') {
                 meta = `VIDEO • ${a.width}×${a.height} • ${a.durationSec || 0}s`;
               } else if (a.category === 'audio') {
@@ -2268,7 +2338,7 @@ export class MiniAgentSam {
               `;
             })
             .join('')
-        : `<span class="ws-muted-note">No imported assets yet. Drop GLB, OBJ, STL, FBX, DAE, IFC BIM, MP4, MP3/WAV, SRT/VTT/TXT, or Images anywhere.</span>`;
+        : `<span class="ws-muted-note">No imported assets yet. Drop GLB/glTF, BIM (.ifc), OBJ, STL, FBX, DAE, Video, Audio, Transcripts, or Images above.</span>`;
 
     const slotsHtml =
       this.savedSlots.length > 0
@@ -2296,14 +2366,34 @@ export class MiniAgentSam {
             .join('')
         : `<span class="ws-muted-note">Save snapshots locally or export a portable .samscene.json bundle.</span>`;
 
+    const dropzoneContent = this.ingestProgress?.active
+      ? `
+        <div class="ws-dropzone-loading" id="wsDropzoneLoading">
+          <div class="ws-spinner" aria-hidden="true"></div>
+          <div class="ws-dropzone-copy">
+            <strong>Parsing ${escapeHtml(this.ingestProgress.currentFile)}</strong>
+            <span>${escapeHtml(this.ingestProgress.stage)} (${this.ingestProgress.completed + 1}/${this.ingestProgress.total})</span>
+          </div>
+        </div>
+      `
+      : `
+        <div class="ws-dropzone-copy">
+          <strong>Drag &amp; drop GLB / glTF or BIM (.ifc) files here</strong>
+          <span>Click to browse • Parsed into 3D scene &amp; registered in Asset Registry</span>
+        </div>
+      `;
+
     container.innerHTML = `
       <section class="ws-card">
         <div class="ws-row-between">
-          <span class="ws-label">Multi-Format Asset Library</span>
+          <span class="ws-label">Multi-Format Asset Registry (${this.mediaAssets.length})</span>
           <label class="ws-mini-btn ws-mini-accent" style="cursor:pointer;">
             <input type="file" id="wsAssetLibInput" accept="${MULTI_FILE_ACCEPT}" multiple hidden />
             + Import
           </label>
+        </div>
+        <div class="ws-dropzone ${this.ingestProgress?.active ? 'is-loading' : ''}" id="wsAssetsDropzone" role="button" tabindex="0" aria-label="Drop GLB, glTF, BIM IFC, or studio media files">
+          ${dropzoneContent}
         </div>
         <input type="search" class="ws-input" id="wsAssetSearch" value="${escapeHtml(
           this.assetSearch
@@ -2341,6 +2431,34 @@ export class MiniAgentSam {
       const files = Array.from(fileIn.files || []);
       if (files.length > 0) await this.callbacks.onImportFiles(files);
       fileIn.value = '';
+    });
+
+    const dropzone = container.querySelector('#wsAssetsDropzone') as HTMLDivElement | null;
+    dropzone?.addEventListener('click', () => fileIn?.click());
+    dropzone?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        fileIn?.click();
+      }
+    });
+    dropzone?.addEventListener('dragenter', (e) => {
+      e.preventDefault();
+      dropzone.classList.add('is-drag-over');
+    });
+    dropzone?.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      dropzone.classList.add('is-drag-over');
+    });
+    dropzone?.addEventListener('dragleave', () => {
+      dropzone.classList.remove('is-drag-over');
+    });
+    dropzone?.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dropzone.classList.remove('is-drag-over');
+      this.setDropOverlayVisible(false);
+      const files = Array.from(e.dataTransfer?.files || []);
+      if (files.length > 0) await this.callbacks.onImportFiles(files);
     });
 
     const searchEl = container.querySelector('#wsAssetSearch') as HTMLInputElement;

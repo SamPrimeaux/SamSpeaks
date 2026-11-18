@@ -46,6 +46,22 @@ const _ndc = new THREE.Vector2();
 const _paintPlane = new THREE.Plane();
 const _paintNormal = new THREE.Vector3();
 const _paintPoint = new THREE.Vector3();
+const _dropGroundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+const _dropGroundPoint = new THREE.Vector3();
+
+function detectFormatBadge(filename: string): string {
+  const idx = filename.lastIndexOf('.');
+  const ext = idx >= 0 ? filename.slice(idx + 1).toLowerCase() : '';
+  if (ext === 'ifc') return 'BIM IFC';
+  if (ext === 'glb' || ext === 'gltf') return 'GLB / glTF';
+  if (['obj', 'stl', 'ply', 'fbx', 'dae'].includes(ext)) return ext.toUpperCase();
+  if (['mp4', 'webm', 'mov'].includes(ext)) return 'VIDEO';
+  if (['mp3', 'wav', 'ogg', 'm4a', 'opus', 'aac'].includes(ext)) return 'AUDIO';
+  if (['srt', 'vtt', 'txt', 'md'].includes(ext)) return 'TRANSCRIPT';
+  if (['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(ext)) return 'IMAGE';
+  if (ext === 'json') return 'PROJECT / JSON';
+  return 'ASSET';
+}
 
 export class StudioApp extends xb.Script {
   private audioEngine = new AudioEngine();
@@ -569,80 +585,125 @@ export class StudioApp extends xb.Script {
     this.miniSam.showToast(`Loaded project "${slot.name}".`);
   }
 
-  private async handleImportFiles(files: File[]): Promise<void> {
-    for (const file of files) {
-      try {
-        const lower = file.name.toLowerCase();
-        if (lower.endsWith('.samscene.json')) {
-          const text = await file.text();
-          const manifest = this.projectService.parseProjectJson(text);
-          this.applyManifest(manifest, true);
-          this.audioEngine.playStudioCue('ready');
-          this.miniSam.showToast(`Opened SamScene project: ${manifest.projectName}`);
-          continue;
-        }
+  private async handleImportFiles(
+    files: File[],
+    dropFloorPoint?: THREE.Vector3
+  ): Promise<void> {
+    const total = files.length;
+    if (total === 0) return;
 
-        if (lower.endsWith('.json')) {
-          const rawText = await file.text();
-          try {
-            const parsed = JSON.parse(rawText) as { version?: number; beats?: unknown };
-            if (parsed && parsed.version === 1 && Array.isArray(parsed.beats)) {
-              const manifest = this.projectService.parseProjectJson(rawText);
-              this.applyManifest(manifest, true);
-              this.audioEngine.playStudioCue('ready');
-              this.miniSam.showToast(`Opened SamScene project: ${manifest.projectName}`);
-              continue;
-            }
-          } catch {
-            // Treat as transcript JSON
-          }
-        }
+    const yieldToPaint = () =>
+      new Promise<void>((resolve) => {
+        window.requestAnimationFrame(() => window.setTimeout(resolve, 0));
+      });
 
-        const asset = await ingestStudioFile(file, this.audioEngine);
-        this.mediaAssets.unshift(asset);
-        this.miniSam.syncMediaAssets(this.mediaAssets);
-
-        if (asset.category === 'image' && asset.dataUrl) {
-          const item = this.scenery.placeImageBackdrop({
-            id: asset.id,
-            name: asset.name,
-            mimeType: asset.mimeType,
-            dataUrl: asset.dataUrl,
-            width: asset.width || 800,
-            height: asset.height || 600,
+    try {
+      for (let idx = 0; idx < total; idx++) {
+        const file = files[idx];
+        const formatLabel = detectFormatBadge(file.name);
+        const setStage = (stage: string) => {
+          this.miniSam.setIngestionProgress({
+            active: true,
+            currentFile: file.name,
+            formatLabel,
+            stage,
+            completed: idx,
+            total,
           });
-          this.cameraDirector.focusOnWorldPoint(item.group.position, 'glide');
-          this.audioEngine.playStudioCue('ready');
-          this.miniSam.showToast(`Placed 3D image backdrop: ${asset.name}`);
-        } else if (asset.category === 'video') {
-          const item = this.scenery.placeVideoScreen(asset);
-          this.cameraDirector.focusOnWorldPoint(item.group.position, 'glide');
-          this.audioEngine.playStudioCue('ready');
-          this.miniSam.showToast(`Placed 3D video screen: ${asset.name}`);
-        } else if (asset.category === 'model' || asset.category === 'bim') {
-          const item = this.scenery.placeImportedModelAsset(asset);
-          if (item) {
-            this.cameraDirector.focusOnWorldPoint(item.group.position, 'glide');
+        };
+
+        setStage('Reading file & preparing parser...');
+        await yieldToPaint();
+
+        try {
+          const lower = file.name.toLowerCase();
+          if (lower.endsWith('.samscene.json')) {
+            setStage('Restoring SamScene project manifest...');
+            const text = await file.text();
+            const manifest = this.projectService.parseProjectJson(text);
+            this.applyManifest(manifest, true);
+            this.audioEngine.playStudioCue('ready');
+            this.miniSam.showToast(`Opened SamScene project: ${manifest.projectName}`);
+            continue;
           }
-          this.audioEngine.playStudioCue('ready');
-          const summaryMsg =
-            asset.category === 'bim' && asset.bimSummary
-              ? `Loaded BIM ${asset.bimSummary.schema} (${asset.bimSummary.totalElements} elements): ${asset.name}`
-              : `Placed 3D model: ${asset.name}`;
-          this.miniSam.showToast(summaryMsg);
-        } else if (asset.category === 'audio') {
-          this.audioEngine.playStudioCue('ready');
+
+          if (lower.endsWith('.json')) {
+            const rawText = await file.text();
+            try {
+              const parsed = JSON.parse(rawText) as { version?: number; beats?: unknown };
+              if (parsed && parsed.version === 1 && Array.isArray(parsed.beats)) {
+                setStage('Restoring SamScene project manifest...');
+                const manifest = this.projectService.parseProjectJson(rawText);
+                this.applyManifest(manifest, true);
+                this.audioEngine.playStudioCue('ready');
+                this.miniSam.showToast(`Opened SamScene project: ${manifest.projectName}`);
+                continue;
+              }
+            } catch {
+              // Treat as transcript JSON
+            }
+          }
+
+          const asset = await ingestStudioFile(file, this.audioEngine, setStage);
+          setStage('Registering in Asset Registry & staging 3D scene...');
+          this.mediaAssets.unshift(asset);
+          this.miniSam.syncMediaAssets(this.mediaAssets);
+
+          const offsetDropPoint = dropFloorPoint
+            ? new THREE.Vector3(
+                dropFloorPoint.x + (idx % 3) * 0.65,
+                0,
+                dropFloorPoint.z + Math.floor(idx / 3) * 0.65
+              )
+            : undefined;
+
+          if (asset.category === 'image' && asset.dataUrl) {
+            const item = this.scenery.placeImageBackdrop(
+              {
+                id: asset.id,
+                name: asset.name,
+                mimeType: asset.mimeType,
+                dataUrl: asset.dataUrl,
+                width: asset.width || 800,
+                height: asset.height || 600,
+              },
+              offsetDropPoint
+            );
+            this.cameraDirector.focusOnWorldPoint(item.group.position, 'glide');
+            this.audioEngine.playStudioCue('ready');
+            this.miniSam.showToast(`Placed 3D image backdrop: ${asset.name}`);
+          } else if (asset.category === 'video') {
+            const item = this.scenery.placeVideoScreen(asset, offsetDropPoint);
+            this.cameraDirector.focusOnWorldPoint(item.group.position, 'glide');
+            this.audioEngine.playStudioCue('ready');
+            this.miniSam.showToast(`Placed 3D video screen: ${asset.name}`);
+          } else if (asset.category === 'model' || asset.category === 'bim') {
+            const item = this.scenery.placeImportedModelAsset(asset, offsetDropPoint);
+            if (item) {
+              this.cameraDirector.focusOnWorldPoint(item.group.position, 'glide');
+            }
+            this.audioEngine.playStudioCue('ready');
+            const summaryMsg =
+              asset.category === 'bim' && asset.bimSummary
+                ? `Loaded BIM ${asset.bimSummary.schema} (${asset.bimSummary.totalElements} elements): ${asset.name}`
+                : `Imported ${asset.modelStats?.format || '3D'} model (${asset.modelStats?.meshCount || 1} meshes): ${asset.name}`;
+            this.miniSam.showToast(summaryMsg);
+          } else if (asset.category === 'audio') {
+            this.audioEngine.playStudioCue('ready');
+            this.miniSam.showToast(
+              `Imported audio "${asset.name}" (${asset.durationSec || 0}s) — ready in SamSpeak & Beats.`
+            );
+          } else if (asset.category === 'transcript') {
+            this.handleApplyTranscript(asset.id, false);
+          }
+        } catch (err) {
           this.miniSam.showToast(
-            `Imported audio "${asset.name}" (${asset.durationSec || 0}s) — ready in SamSpeak & Beats.`
+            err instanceof Error ? err.message : `Failed to import ${file.name}`
           );
-        } else if (asset.category === 'transcript') {
-          this.handleApplyTranscript(asset.id, false);
         }
-      } catch (err) {
-        this.miniSam.showToast(
-          err instanceof Error ? err.message : `Failed to import ${file.name}`
-        );
       }
+    } finally {
+      this.miniSam.setIngestionProgress(null);
     }
   }
 
@@ -840,23 +901,65 @@ export class StudioApp extends xb.Script {
     });
   }
 
+  private getDropFloorPoint(clientX: number, clientY: number): THREE.Vector3 | undefined {
+    const viewport = this.miniSam.getViewportElement();
+    const camera = xb.core.camera;
+    if (!viewport || !camera) return undefined;
+    const rect = viewport.getBoundingClientRect();
+    if (
+      rect.width <= 0 ||
+      rect.height <= 0 ||
+      clientX < rect.left ||
+      clientX > rect.right ||
+      clientY < rect.top ||
+      clientY > rect.bottom
+    ) {
+      return undefined;
+    }
+
+    _ndc.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+    _ndc.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+    _raycaster.setFromCamera(_ndc, camera);
+    const hit = _raycaster.ray.intersectPlane(_dropGroundPlane, _dropGroundPoint);
+    if (!hit) return undefined;
+
+    return new THREE.Vector3(
+      THREE.MathUtils.clamp(hit.x, STAGE_POSITION.x - 4.2, STAGE_POSITION.x + 4.2),
+      0,
+      THREE.MathUtils.clamp(hit.z, STAGE_POSITION.z - 4.2, STAGE_POSITION.z + 4.2)
+    );
+  }
+
   private attachGlobalDropAndKeys(): void {
+    const hasDraggedFiles = (e: DragEvent): boolean => {
+      if ((e.dataTransfer?.files?.length ?? 0) > 0) return true;
+      const types = e.dataTransfer?.types;
+      return types ? Array.from(types).includes('Files') : false;
+    };
+
     const onDragEnter = (e: DragEvent) => {
-      if (!e.dataTransfer?.types?.includes('Files')) return;
+      if (!hasDraggedFiles(e)) return;
       e.preventDefault();
       this.dragDepth++;
       this.miniSam.setDropOverlayVisible(true);
     };
 
     const onDragOver = (e: DragEvent) => {
-      if (!e.dataTransfer?.types?.includes('Files')) return;
+      if (!hasDraggedFiles(e)) return;
       e.preventDefault();
+      if (e.dataTransfer) {
+        e.dataTransfer.dropEffect = 'copy';
+      }
     };
 
     const onDragLeave = (e: DragEvent) => {
-      if (!e.dataTransfer?.types?.includes('Files')) return;
+      if (!hasDraggedFiles(e)) return;
       e.preventDefault();
-      this.dragDepth = Math.max(0, this.dragDepth - 1);
+      if (e.relatedTarget === null) {
+        this.dragDepth = 0;
+      } else {
+        this.dragDepth = Math.max(0, this.dragDepth - 1);
+      }
       if (this.dragDepth === 0) {
         this.miniSam.setDropOverlayVisible(false);
       }
@@ -868,7 +971,8 @@ export class StudioApp extends xb.Script {
       this.miniSam.setDropOverlayVisible(false);
       const files = Array.from(e.dataTransfer?.files || []);
       if (files.length === 0) return;
-      await this.handleImportFiles(files);
+      const dropPoint = this.getDropFloorPoint(e.clientX, e.clientY);
+      await this.handleImportFiles(files, dropPoint);
     };
 
     const onKeyDown = (e: KeyboardEvent) => {

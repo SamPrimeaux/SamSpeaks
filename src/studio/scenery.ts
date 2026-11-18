@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import * as xb from 'xrblocks';
 import type {
   BimSummary,
@@ -534,8 +535,8 @@ export class SceneryManager extends xb.Script {
         STAGE_POSITION.z + Math.cos(angle) * 0.95 - 0.35
       );
 
-    // Clone geometry wrapper so placing twice from Asset Library creates independent instances
-    const modelInstance = asset.runtimeModelRoot.clone(true);
+    // Clone geometry wrapper (preserving SkinnedMesh bone bindings) so multiple placements remain independent
+    const modelInstance = SkeletonUtils.clone(asset.runtimeModelRoot) as THREE.Group;
 
     // Add sleek architectural plinth ring under imported 3D / BIM assets
     const group = new THREE.Group();
