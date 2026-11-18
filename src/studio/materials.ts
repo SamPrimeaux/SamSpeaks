@@ -26,10 +26,14 @@ export class StudioMaterialLibrary {
   public readonly walnutWood: THREE.MeshStandardMaterial;
   public readonly travertine: THREE.MeshStandardMaterial;
   public readonly emissiveAccent: THREE.MeshStandardMaterial;
+  public readonly warmBeacon: THREE.MeshStandardMaterial;
   public readonly studioFloor: THREE.MeshStandardMaterial;
   public readonly micMesh: THREE.MeshStandardMaterial;
   public readonly foliage: THREE.MeshStandardMaterial;
   public readonly moss: THREE.MeshStandardMaterial;
+  public readonly oceanWater: THREE.MeshPhysicalMaterial;
+  public readonly basaltCliff: THREE.MeshStandardMaterial;
+  public readonly orbitalDeck: THREE.MeshStandardMaterial;
   public readonly contactShadow: THREE.MeshBasicMaterial;
   public readonly dialTop: THREE.MeshStandardMaterial;
   public readonly paintRibbon: THREE.MeshPhysicalMaterial;
@@ -103,8 +107,8 @@ export class StudioMaterialLibrary {
       color: 0xd9d0c1,
       metalness: 0.02,
       roughness: 0.82,
-      bumpMap: textures.brushedRoughness,
-      bumpScale: 0.003,
+      bumpMap: textures.stoneBump,
+      bumpScale: 0.008,
     });
 
     this.emissiveAccent = new THREE.MeshStandardMaterial({
@@ -113,6 +117,14 @@ export class StudioMaterialLibrary {
       emissiveIntensity: 1.4,
       roughness: 0.22,
       metalness: 0.1,
+    });
+
+    this.warmBeacon = new THREE.MeshStandardMaterial({
+      color: 0xffd7a3,
+      emissive: 0xff9f43,
+      emissiveIntensity: 1.85,
+      roughness: 0.2,
+      metalness: 0.05,
     });
 
     this.studioFloor = new THREE.MeshStandardMaterial({
@@ -139,6 +151,34 @@ export class StudioMaterialLibrary {
       color: 0x2f5e3e,
       roughness: 0.92,
       metalness: 0.0,
+      bumpMap: textures.stoneBump,
+      bumpScale: 0.014,
+    });
+
+    this.oceanWater = new THREE.MeshPhysicalMaterial({
+      color: 0x10384e,
+      metalness: 0.15,
+      roughness: 0.14,
+      clearcoat: 0.9,
+      clearcoatRoughness: 0.08,
+      bumpMap: textures.waterRippleBump,
+      bumpScale: 0.028,
+    });
+
+    this.basaltCliff = new THREE.MeshStandardMaterial({
+      color: 0x292d36,
+      roughness: 0.88,
+      metalness: 0.08,
+      bumpMap: textures.stoneBump,
+      bumpScale: 0.018,
+    });
+
+    this.orbitalDeck = new THREE.MeshStandardMaterial({
+      color: 0x1b212e,
+      metalness: 0.72,
+      roughness: 0.34,
+      bumpMap: textures.hexDeckBump,
+      bumpScale: 0.01,
     });
 
     this.contactShadow = new THREE.MeshBasicMaterial({
@@ -190,10 +230,14 @@ export class StudioMaterialLibrary {
     this.walnutWood.dispose();
     this.travertine.dispose();
     this.emissiveAccent.dispose();
+    this.warmBeacon.dispose();
     this.studioFloor.dispose();
     this.micMesh.dispose();
     this.foliage.dispose();
     this.moss.dispose();
+    this.oceanWater.dispose();
+    this.basaltCliff.dispose();
+    this.orbitalDeck.dispose();
     this.contactShadow.dispose();
     this.dialTop.dispose();
     this.paintRibbon.dispose();

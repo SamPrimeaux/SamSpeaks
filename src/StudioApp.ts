@@ -1,7 +1,16 @@
 import * as THREE from 'three';
 import * as xb from 'xrblocks';
-import { FINISH_MAP, SUBJECT_MAP } from './constants.ts';
+import {
+  ENVIRONMENT_LEVEL_MAP,
+  FINISH_MAP,
+  SUBJECT_MAP,
+} from './constants.ts';
 import { AudioEngine } from './services/audioEngine.ts';
+import {
+  ingestStudioFile,
+  transcriptCuesToBeats,
+} from './services/fileIngestService.ts';
+import { ProjectPersistenceService } from './services/projectService.ts';
 import { exportSceneAsGlb } from './services/sceneExportService.ts';
 import {
   assistScript,
@@ -16,10 +25,12 @@ import { SpatialBrush } from './studio/sculptBrush.ts';
 import type {
   AtmosphereMoodId,
   CameraShotId,
-  DroppedImageAsset,
+  EnvironmentLevelId,
   FinishId,
   MovieBeat,
+  SamSceneProjectManifest,
   SceneryPropType,
+  StudioMediaAsset,
   StudioSubjectId,
   TransitionType,
   TtsMode,
@@ -28,7 +39,7 @@ import type {
 import { StudioDeckCard } from './ui/StudioDeckCard.ts';
 import { StudioHudOverlay } from './ui/StudioHudOverlay.ts';
 import { VoiceStudioCard } from './ui/VoiceStudioCard.ts';
-import { MiniAgentSam, processImageFile } from './web/MiniAgentSam.ts';
+import { MiniAgentSam } from './web/MiniAgentSam.ts';
 
 const _raycaster = new THREE.Raycaster();
 const _ndc = new THREE.Vector2();
@@ -38,6 +49,7 @@ const _paintPoint = new THREE.Vector3();
 
 export class StudioApp extends xb.Script {
   private audioEngine = new AudioEngine();
+  private projectService = new ProjectPersistenceService();
   private stage = new StudioStage();
   private cameraDirector = new CameraDirector();
   private scenery!: SceneryManager;
@@ -50,12 +62,14 @@ export class StudioApp extends xb.Script {
   private deckTransition!: xb.VisibilityTransition;
   private voiceTransition!: xb.VisibilityTransition;
 
-  // Web-friendly creative studio & miniAgentSam composer
+  // Web creative studio shell & flexible side container
   private miniSam!: MiniAgentSam;
 
   private activeSubjectId: StudioSubjectId = 'astrolabe';
   private activeFinishId: FinishId = 'gold';
+  private activeEnvironmentId: EnvironmentLevelId = 'studio-stage';
   private activeMoodId: AtmosphereMoodId = 'studio';
+  private mediaAssets: StudioMediaAsset[] = [];
   private lastAudioBase64: string | null = null;
   private uiValidated = false;
   private framesSinceInit = 0;
@@ -66,6 +80,8 @@ export class StudioApp extends xb.Script {
   private paintingWeb = false;
   private dragDepth = 0;
   private movieRunToken = 0;
+  private isRestoringManifest = false;
+  private autoSaveTimer: number | null = null;
   private cleanupListeners: Array<() => void> = [];
 
   init(): void {
@@ -76,12 +92,16 @@ export class StudioApp extends xb.Script {
     this.cameraDirector.init(this.stage.isSoftwareGl);
 
     this.scenery = new SceneryManager(this.stage.materials, this.stage.textures, {
-      onSelectionChange: (item, count) => {
-        this.miniSam?.syncSelection(item ? item.label : null, count);
+      onSelectionChange: (_item, count) => {
+        this.miniSam?.syncSelection(this.scenery.getSelectedObjectDetails(), count);
       },
       onPlacementComplete: () => {
         this.miniSam?.setArmedPlacement(null);
         this.audioEngine.playStudioCue('select');
+        this.recordProjectMutation();
+      },
+      onMutation: () => {
+        this.recordProjectMutation();
       },
     });
     this.add(this.scenery);
@@ -98,6 +118,19 @@ export class StudioApp extends xb.Script {
     this.mountCanvasIntoViewport();
     this.attachCanvasInteractions();
     this.attachGlobalDropAndKeys();
+
+    // Restore persisted active project if available, otherwise establish Undo baseline
+    const saved = this.projectService.loadActiveFromStorage();
+    if (saved) {
+      this.applyManifest(saved, false);
+    } else {
+      this.projectService.replaceBaseline(this.captureManifest());
+    }
+    this.miniSam.syncSavedSlots(this.projectService.listSavedSlots());
+    this.miniSam.syncHistoryState(
+      this.projectService.canUndo(),
+      this.projectService.canRedo()
+    );
 
     this.audioEngine.playStudioCue('ready');
   }
@@ -147,9 +180,20 @@ export class StudioApp extends xb.Script {
     this.deckCard = new StudioDeckCard({
       onSelectSubject: (id) => this.handleSelectSubject(id),
       onSelectFinish: (id) => this.handleSelectFinish(id),
-      onExplodeChange: (value) => this.stage.setExplodeAmount(value),
-      onSpinChange: (value) => this.stage.setSpinSpeed(value),
-      onLightAngleChange: (rad) => this.stage.setKeyLightAngle(rad),
+      onExplodeChange: (value) => {
+        this.stage.setExplodeAmount(value);
+        this.miniSam.syncStageDynamics(value, this.stage.getSpinSpeed());
+        this.recordProjectMutation();
+      },
+      onSpinChange: (value) => {
+        this.stage.setSpinSpeed(value);
+        this.miniSam.syncStageDynamics(this.stage.getExplodeAmount(), value);
+        this.recordProjectMutation();
+      },
+      onLightAngleChange: (rad) => {
+        this.stage.setKeyLightAngle(rad);
+        this.recordProjectMutation();
+      },
       onToggleBrush: (enabled) => this.handleToggleBrush(enabled),
       onClearBrush: () => this.handleClearBrush(),
       onResetStudio: () => this.handleResetStudio(),
@@ -187,18 +231,41 @@ export class StudioApp extends xb.Script {
     this.miniSam = new MiniAgentSam({
       onSelectSubject: (id) => this.handleSelectSubject(id),
       onSelectFinish: (id) => this.handleSelectFinish(id),
+      onSelectEnvironment: (id) => this.handleSelectEnvironment(id),
       onSelectMood: (id) => this.handleSelectMood(id),
-      onExplodeChange: (value) => this.stage.setExplodeAmount(value),
-      onSpinChange: (value) => this.stage.setSpinSpeed(value),
-      onLightAngleChange: (rad) => this.stage.setKeyLightAngle(rad),
-      onKeyIntensityChange: (value) => this.stage.setKeyLightIntensity(value),
-      onAmbientColorChange: (hue, sat) => this.stage.setAmbientColorHsl(hue, sat),
-      onAmbientIntensityChange: (value) => this.stage.setAmbientIntensity(value),
-      onShadowSoftnessChange: (value) => this.stage.setShadowSoftness(value),
+      onExplodeChange: (value) => {
+        this.stage.setExplodeAmount(value);
+        this.recordProjectMutation();
+      },
+      onSpinChange: (value) => {
+        this.stage.setSpinSpeed(value);
+        this.recordProjectMutation();
+      },
+      onLightAngleChange: (rad) => {
+        this.stage.setKeyLightAngle(rad);
+        this.recordProjectMutation();
+      },
+      onKeyIntensityChange: (value) => {
+        this.stage.setKeyLightIntensity(value);
+        this.recordProjectMutation();
+      },
+      onAmbientColorChange: (hue, sat) => {
+        this.stage.setAmbientColorHsl(hue, sat);
+        this.recordProjectMutation();
+      },
+      onAmbientIntensityChange: (value) => {
+        this.stage.setAmbientIntensity(value);
+        this.recordProjectMutation();
+      },
+      onShadowSoftnessChange: (value) => {
+        this.stage.setShadowSoftness(value);
+        this.recordProjectMutation();
+      },
       onResetLighting: () => {
         this.stage.resetLighting();
         this.miniSam.syncLightingState(this.stage.getLightingState());
         this.audioEngine.playStudioCue('select');
+        this.recordProjectMutation();
       },
       onToggleBrush: (enabled) => this.handleToggleBrush(enabled),
       onClearBrush: () => this.handleClearBrush(),
@@ -209,14 +276,28 @@ export class StudioApp extends xb.Script {
       onCancelArm: () => {
         this.scenery.clearArmedPlacement();
       },
-      onPlaceImageInScene: (asset) => {
-        const item = this.scenery.placeImageBackdrop(asset);
-        this.cameraDirector.focusOnWorldPoint(item.group.position, 'glide');
-        this.audioEngine.playStudioCue('ready');
-        this.miniSam.showToast(`Placed 3D backdrop: ${asset.name}`);
-      },
+      onImportFiles: (files) => this.handleImportFiles(files),
+      onPlaceMediaAsset: (assetId) => this.handlePlaceMediaAsset(assetId),
       onArmImageInScene: (asset) => {
         this.scenery.armImagePlacement(asset);
+      },
+      onPlayMediaAudio: (assetId) => this.handlePlayMediaAudio(assetId),
+      onApplyTranscript: (assetId, asBeats) => this.handleApplyTranscript(assetId, asBeats),
+      onRemoveMediaAsset: (assetId) => this.handleRemoveMediaAsset(assetId),
+      onInspectorChange: (patch) => {
+        this.scenery.setSelectedTransform(patch);
+      },
+      onToggleVideoPlay: () => {
+        this.scenery.toggleSelectedVideoPlay();
+      },
+      onToggleVideoMute: () => {
+        this.scenery.toggleSelectedVideoMute();
+      },
+      onSelectAnimClip: (index) => {
+        this.scenery.selectAnimationClip(index);
+      },
+      onToggleAnimPlay: () => {
+        this.scenery.toggleAnimationPlay();
       },
       onRotateSelectedProp: () => {
         this.scenery.rotateSelected(Math.PI / 4);
@@ -257,20 +338,393 @@ export class StudioApp extends xb.Script {
       onStopMovie: () => this.stopMovie(),
       onSpeakBeat: async (beat) => {
         this.miniSam.setSubtitle(`${beat.title} — ${beat.script}`);
+        if (beat.audioAssetId) {
+          this.handlePlayMediaAudio(beat.audioAssetId);
+          return;
+        }
         const req = this.buildTtsRequestForBeat(beat);
         await this.handleSynthesize(req);
       },
       onSynthesizeStandalone: (req) => this.handleSynthesize(req),
       onStopAudio: () => this.handleStopAudio(),
       onDownloadAudio: () => this.handleDownloadAudio(),
+      onVolumeChange: (vol) => {
+        this.audioEngine.setVolume(vol);
+        this.recordProjectMutation();
+      },
+      onToggleMute: () => {
+        const nextMuted = !this.audioEngine.isMuted();
+        this.audioEngine.setMuted(nextMuted);
+        this.miniSam.syncVolumeState(this.audioEngine.getVolume(), nextMuted);
+        this.recordProjectMutation();
+      },
       onAssistScript: (mode) => this.handleAssistScript(mode),
       onExportScene: () => this.handleExportScene(),
+      onExportProjectBundle: () => this.handleExportProjectBundle(),
+      onSaveProjectSlot: (name) => this.handleSaveProjectSlot(name),
+      onLoadProjectSlot: (id) => this.handleLoadProjectSlot(id),
+      onDeleteProjectSlot: (id) => {
+        this.projectService.deleteSavedSlot(id);
+        this.miniSam.syncSavedSlots(this.projectService.listSavedSlots());
+        this.miniSam.showToast('Deleted project slot.');
+      },
+      onUndo: () => this.handleUndo(),
+      onRedo: () => this.handleRedo(),
+      onProjectStateChange: () => this.recordProjectMutation(),
       onEnterXr: () => this.handleEnterXr(),
     });
 
     this.miniSam.syncSelection(null, this.scenery.getItemCount());
     this.miniSam.syncStandaloneScript(SUBJECT_MAP[this.activeSubjectId].defaultSingleScript);
     this.miniSam.syncLightingState(this.stage.getLightingState());
+    this.miniSam.syncEnvironment(this.activeEnvironmentId);
+    this.miniSam.syncVolumeState(this.audioEngine.getVolume(), this.audioEngine.isMuted());
+  }
+
+  private captureManifest(): SamSceneProjectManifest {
+    const story = this.miniSam.getStoryboardBeats();
+    const voice = this.miniSam.getVoiceState();
+    const cam = this.cameraDirector.getCameraState();
+    const savedImages = this.mediaAssets
+      .filter((a) => a.category === 'image' && Boolean(a.dataUrl))
+      .slice(0, 8)
+      .map((a) => ({
+        id: a.id,
+        name: a.name,
+        mimeType: a.mimeType,
+        dataUrl: a.dataUrl || '',
+        width: a.width || 800,
+        height: a.height || 600,
+      }));
+
+    return {
+      version: 1,
+      projectName: story.movieTitle,
+      updatedAt: Date.now(),
+      subjectId: this.activeSubjectId,
+      finishId: this.activeFinishId,
+      environmentId: this.activeEnvironmentId,
+      moodId: this.activeMoodId,
+      explodeAmount: this.stage.getExplodeAmount(),
+      spinSpeed: this.stage.getSpinSpeed(),
+      lighting: this.stage.getLightingState(),
+      cameraPosition: cam.position,
+      cameraTarget: cam.target,
+      movieTitle: story.movieTitle,
+      beats: story.beats,
+      activeBeatIndex: story.activeBeatIndex,
+      voiceState: voice,
+      sceneryItems: this.scenery.serializeItems(),
+      savedImages,
+    };
+  }
+
+  private applyManifest(manifest: SamSceneProjectManifest, pushUndo: boolean): void {
+    this.isRestoringManifest = true;
+    try {
+      if (manifest.subjectId && SUBJECT_MAP[manifest.subjectId]) {
+        this.activeSubjectId = manifest.subjectId;
+        this.stage.setSubject(manifest.subjectId);
+        this.deckCard?.setActiveSubject(manifest.subjectId);
+        this.miniSam.syncSubject(manifest.subjectId);
+      }
+      if (manifest.finishId && FINISH_MAP[manifest.finishId]) {
+        this.activeFinishId = manifest.finishId;
+        this.stage.setFinish(manifest.finishId);
+        this.deckCard?.setActiveFinish(manifest.finishId);
+        this.miniSam.syncFinish(manifest.finishId);
+      }
+      if (manifest.environmentId && ENVIRONMENT_LEVEL_MAP[manifest.environmentId]) {
+        this.activeEnvironmentId = manifest.environmentId;
+        this.stage.setEnvironmentLevel(manifest.environmentId);
+        this.miniSam.syncEnvironment(manifest.environmentId);
+      }
+      if (manifest.moodId) {
+        this.activeMoodId = manifest.moodId;
+        this.stage.setAtmosphereMood(manifest.moodId, true);
+        this.miniSam.syncMood(manifest.moodId);
+      }
+      if (manifest.lighting) {
+        this.stage.applyLightingState(manifest.lighting);
+        this.miniSam.syncLightingState(manifest.lighting);
+      }
+      if (manifest.explodeAmount !== undefined) {
+        this.stage.setExplodeAmount(manifest.explodeAmount);
+      }
+      if (manifest.spinSpeed !== undefined) {
+        this.stage.setSpinSpeed(manifest.spinSpeed);
+      }
+      this.miniSam.syncStageDynamics(
+        this.stage.getExplodeAmount(),
+        this.stage.getSpinSpeed()
+      );
+
+      if (manifest.cameraPosition && manifest.cameraTarget) {
+        this.cameraDirector.setCameraState(manifest.cameraPosition, manifest.cameraTarget);
+      }
+
+      if (Array.isArray(manifest.savedImages)) {
+        for (const img of manifest.savedImages) {
+          if (!this.mediaAssets.some((a) => a.id === img.id)) {
+            this.mediaAssets.push({
+              id: img.id,
+              category: 'image',
+              name: img.name,
+              mimeType: img.mimeType,
+              sizeBytes: img.dataUrl.length,
+              createdAt: manifest.updatedAt || Date.now(),
+              dataUrl: img.dataUrl,
+              width: img.width,
+              height: img.height,
+            });
+          }
+        }
+        this.miniSam.syncMediaAssets(this.mediaAssets);
+      }
+
+      if (Array.isArray(manifest.sceneryItems)) {
+        this.scenery.restoreSerializedItems(manifest.sceneryItems, this.mediaAssets);
+      }
+
+      this.miniSam.setMovieTitle(manifest.movieTitle || manifest.projectName);
+      if (Array.isArray(manifest.beats) && manifest.beats.length > 0) {
+        this.miniSam.setStoryboardBeats(manifest.beats, manifest.activeBeatIndex || 0);
+      }
+      if (manifest.voiceState) {
+        this.audioEngine.setVolume(manifest.voiceState.volume ?? 0.92);
+        this.audioEngine.setMuted(Boolean(manifest.voiceState.muted));
+        this.miniSam.applyVoiceState(manifest.voiceState);
+      }
+      this.refreshHudSummary();
+    } finally {
+      this.isRestoringManifest = false;
+    }
+
+    const synced = this.captureManifest();
+    if (pushUndo) {
+      this.projectService.pushSnapshot(synced);
+    } else {
+      this.projectService.replaceBaseline(synced);
+    }
+    this.projectService.saveActiveToStorage(synced);
+    this.miniSam.syncHistoryState(
+      this.projectService.canUndo(),
+      this.projectService.canRedo()
+    );
+  }
+
+  private recordProjectMutation(): void {
+    if (this.isRestoringManifest) return;
+    if (this.autoSaveTimer !== null) {
+      window.clearTimeout(this.autoSaveTimer);
+    }
+    this.autoSaveTimer = window.setTimeout(() => {
+      this.autoSaveTimer = null;
+      const snapshot = this.captureManifest();
+      this.projectService.pushSnapshot(snapshot);
+      this.projectService.saveActiveToStorage(snapshot);
+      this.miniSam.syncHistoryState(
+        this.projectService.canUndo(),
+        this.projectService.canRedo()
+      );
+    }, 140);
+  }
+
+  private handleUndo(): void {
+    const prev = this.projectService.undo();
+    if (!prev) return;
+    this.applyManifest(prev, false);
+    this.audioEngine.playStudioCue('select');
+    this.miniSam.showToast('Undid last change.');
+  }
+
+  private handleRedo(): void {
+    const next = this.projectService.redo();
+    if (!next) return;
+    this.applyManifest(next, false);
+    this.audioEngine.playStudioCue('select');
+    this.miniSam.showToast('Redid change.');
+  }
+
+  private handleExportProjectBundle(): void {
+    const manifest = this.captureManifest();
+    const { filename, byteLength } = this.projectService.downloadProjectBundle(manifest);
+    const kb = Math.max(1, Math.round(byteLength / 1024));
+    this.audioEngine.playStudioCue('ready');
+    this.miniSam.showToast(`Saved project bundle ${filename} (${kb} KB)`);
+  }
+
+  private handleSaveProjectSlot(name: string): void {
+    const manifest = this.captureManifest();
+    const slot = this.projectService.saveNamedSlot(name, manifest);
+    this.miniSam.syncSavedSlots(this.projectService.listSavedSlots());
+    this.miniSam.showToast(`Saved project "${slot.name}" locally.`);
+  }
+
+  private handleLoadProjectSlot(id: string): void {
+    const slot = this.projectService.listSavedSlots().find((s) => s.id === id);
+    if (!slot) return;
+    this.applyManifest(slot.manifest, true);
+    this.audioEngine.playStudioCue('ready');
+    this.miniSam.showToast(`Loaded project "${slot.name}".`);
+  }
+
+  private async handleImportFiles(files: File[]): Promise<void> {
+    for (const file of files) {
+      try {
+        const lower = file.name.toLowerCase();
+        if (lower.endsWith('.samscene.json')) {
+          const text = await file.text();
+          const manifest = this.projectService.parseProjectJson(text);
+          this.applyManifest(manifest, true);
+          this.audioEngine.playStudioCue('ready');
+          this.miniSam.showToast(`Opened SamScene project: ${manifest.projectName}`);
+          continue;
+        }
+
+        if (lower.endsWith('.json')) {
+          const rawText = await file.text();
+          try {
+            const parsed = JSON.parse(rawText) as { version?: number; beats?: unknown };
+            if (parsed && parsed.version === 1 && Array.isArray(parsed.beats)) {
+              const manifest = this.projectService.parseProjectJson(rawText);
+              this.applyManifest(manifest, true);
+              this.audioEngine.playStudioCue('ready');
+              this.miniSam.showToast(`Opened SamScene project: ${manifest.projectName}`);
+              continue;
+            }
+          } catch {
+            // Treat as transcript JSON
+          }
+        }
+
+        const asset = await ingestStudioFile(file, this.audioEngine);
+        this.mediaAssets.unshift(asset);
+        this.miniSam.syncMediaAssets(this.mediaAssets);
+
+        if (asset.category === 'image' && asset.dataUrl) {
+          const item = this.scenery.placeImageBackdrop({
+            id: asset.id,
+            name: asset.name,
+            mimeType: asset.mimeType,
+            dataUrl: asset.dataUrl,
+            width: asset.width || 800,
+            height: asset.height || 600,
+          });
+          this.cameraDirector.focusOnWorldPoint(item.group.position, 'glide');
+          this.audioEngine.playStudioCue('ready');
+          this.miniSam.showToast(`Placed 3D image backdrop: ${asset.name}`);
+        } else if (asset.category === 'video') {
+          const item = this.scenery.placeVideoScreen(asset);
+          this.cameraDirector.focusOnWorldPoint(item.group.position, 'glide');
+          this.audioEngine.playStudioCue('ready');
+          this.miniSam.showToast(`Placed 3D video screen: ${asset.name}`);
+        } else if (asset.category === 'model' || asset.category === 'bim') {
+          const item = this.scenery.placeImportedModelAsset(asset);
+          if (item) {
+            this.cameraDirector.focusOnWorldPoint(item.group.position, 'glide');
+          }
+          this.audioEngine.playStudioCue('ready');
+          const summaryMsg =
+            asset.category === 'bim' && asset.bimSummary
+              ? `Loaded BIM ${asset.bimSummary.schema} (${asset.bimSummary.totalElements} elements): ${asset.name}`
+              : `Placed 3D model: ${asset.name}`;
+          this.miniSam.showToast(summaryMsg);
+        } else if (asset.category === 'audio') {
+          this.audioEngine.playStudioCue('ready');
+          this.miniSam.showToast(
+            `Imported audio "${asset.name}" (${asset.durationSec || 0}s) — ready in SamSpeak & Beats.`
+          );
+        } else if (asset.category === 'transcript') {
+          this.handleApplyTranscript(asset.id, false);
+        }
+      } catch (err) {
+        this.miniSam.showToast(
+          err instanceof Error ? err.message : `Failed to import ${file.name}`
+        );
+      }
+    }
+  }
+
+  private handlePlaceMediaAsset(assetId: string): void {
+    const asset = this.mediaAssets.find((a) => a.id === assetId);
+    if (!asset) return;
+
+    if (asset.category === 'image' && asset.dataUrl) {
+      this.scenery.armImagePlacement({
+        id: asset.id,
+        name: asset.name,
+        mimeType: asset.mimeType,
+        dataUrl: asset.dataUrl,
+        width: asset.width || 800,
+        height: asset.height || 600,
+      });
+      this.miniSam.setArmedPlacement(asset.name);
+      return;
+    }
+
+    if (asset.category === 'video') {
+      const item = this.scenery.placeVideoScreen(asset);
+      this.cameraDirector.focusOnWorldPoint(item.group.position, 'glide');
+      this.audioEngine.playStudioCue('ready');
+      this.miniSam.showToast(`Placed video screen: ${asset.name}`);
+      return;
+    }
+
+    if (asset.category === 'model' || asset.category === 'bim') {
+      const item = this.scenery.placeImportedModelAsset(asset);
+      if (item) {
+        this.cameraDirector.focusOnWorldPoint(item.group.position, 'glide');
+        this.audioEngine.playStudioCue('ready');
+        this.miniSam.showToast(`Placed in 3D: ${asset.name}`);
+      }
+    }
+  }
+
+  private handlePlayMediaAudio(assetId: string): void {
+    const asset = this.mediaAssets.find((a) => a.id === assetId);
+    if (!asset?.runtimeFileBuffer) return;
+
+    this.miniSam.setStandaloneVoiceState(true, Boolean(this.lastAudioBase64));
+    void this.audioEngine
+      .playArrayBuffer(asset.runtimeFileBuffer, () => {
+        this.miniSam.setStandaloneVoiceState(false, Boolean(this.lastAudioBase64));
+        this.miniSam.showToast(`Finished playing ${asset.name}`);
+      })
+      .catch((err) => {
+        this.miniSam.setStandaloneVoiceState(false, Boolean(this.lastAudioBase64));
+        this.miniSam.showToast(
+          err instanceof Error ? err.message : 'Audio decode failed.'
+        );
+      });
+  }
+
+  private handleApplyTranscript(assetId: string, asBeats: boolean): void {
+    const asset = this.mediaAssets.find((a) => a.id === assetId);
+    if (!asset) return;
+    if (asBeats && asset.transcriptCues && asset.transcriptCues.length > 0) {
+      const beats = transcriptCuesToBeats(asset.transcriptCues, this.activeMoodId);
+      this.miniSam.setStoryboardBeats(beats, 0);
+      this.recordProjectMutation();
+      this.miniSam.showToast(`Generated ${beats.length} storyboard beats from ${asset.name}`);
+      return;
+    }
+    if (asset.transcriptText) {
+      this.miniSam.syncStandaloneScript(asset.transcriptText);
+      this.recordProjectMutation();
+      this.miniSam.showToast(`Loaded transcript into SamSpeak (${asset.transcriptCues?.length || 0} cues).`);
+    }
+  }
+
+  private handleRemoveMediaAsset(assetId: string): void {
+    const idx = this.mediaAssets.findIndex((a) => a.id === assetId);
+    if (idx === -1) return;
+    const [removed] = this.mediaAssets.splice(idx, 1);
+    if (removed.objectUrl) {
+      URL.revokeObjectURL(removed.objectUrl);
+    }
+    this.miniSam.syncMediaAssets(this.mediaAssets);
+    this.recordProjectMutation();
   }
 
   private attachCanvasInteractions(): void {
@@ -351,6 +805,9 @@ export class StudioApp extends xb.Script {
       if (this.draggingProp) {
         this.draggingProp = false;
         this.cameraDirector.setDraggingProp(false);
+        if (moved >= 3) {
+          this.scenery.notifyDragEnded();
+        }
         return;
       }
 
@@ -409,28 +866,27 @@ export class StudioApp extends xb.Script {
       e.preventDefault();
       this.dragDepth = 0;
       this.miniSam.setDropOverlayVisible(false);
-      const files = Array.from(e.dataTransfer?.files || []).filter((f) =>
-        f.type.startsWith('image/')
-      );
+      const files = Array.from(e.dataTransfer?.files || []);
       if (files.length === 0) return;
-
-      for (const file of files) {
-        try {
-          const asset = await processImageFile(file);
-          this.miniSam.addDroppedImage(asset);
-          const item = this.scenery.placeImageBackdrop(asset);
-          this.cameraDirector.focusOnWorldPoint(item.group.position, 'glide');
-          this.audioEngine.playStudioCue('ready');
-          this.miniSam.showToast(`Placed 3D image backdrop: ${asset.name}`);
-        } catch (err) {
-          this.miniSam.showToast(
-            err instanceof Error ? err.message : 'Could not load dropped image.'
-          );
-        }
-      }
+      await this.handleImportFiles(files);
     };
 
     const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        if (e.shiftKey) {
+          this.handleRedo();
+        } else {
+          this.handleUndo();
+        }
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'y') {
+        e.preventDefault();
+        this.handleRedo();
+        return;
+      }
+
       const target = e.target as HTMLElement | null;
       if (
         target &&
@@ -493,7 +949,7 @@ export class StudioApp extends xb.Script {
       return;
     }
     this.miniSam.showToast(
-      'No XR headset detected on this browser — full web 3D studio mode is already active!'
+      'No XR headset detected on this browser — full web SamScene 3D mode is active!'
     );
   }
 
@@ -506,6 +962,7 @@ export class StudioApp extends xb.Script {
     this.miniSam.syncStandaloneScript(SUBJECT_MAP[id].defaultSingleScript);
     this.refreshHudSummary();
     this.audioEngine.playStudioCue('switch');
+    this.recordProjectMutation();
   }
 
   private handleSelectFinish(id: FinishId): void {
@@ -515,6 +972,24 @@ export class StudioApp extends xb.Script {
     this.miniSam.syncFinish(id);
     this.refreshHudSummary();
     this.audioEngine.playStudioCue('select');
+    this.recordProjectMutation();
+  }
+
+  private handleSelectEnvironment(id: EnvironmentLevelId): void {
+    this.activeEnvironmentId = id;
+    this.stage.setEnvironmentLevel(id);
+    const preset = ENVIRONMENT_LEVEL_MAP[id];
+    if (preset) {
+      this.activeMoodId = preset.defaultMood;
+      this.stage.setAtmosphereMood(preset.defaultMood);
+      this.miniSam.syncMood(preset.defaultMood);
+      this.miniSam.syncLightingState(this.stage.getLightingState());
+    }
+    this.miniSam.syncEnvironment(id);
+    this.refreshHudSummary();
+    this.audioEngine.playStudioCue('switch');
+    this.miniSam.showToast(`Environment: ${preset.label} (${preset.subtitle})`);
+    this.recordProjectMutation();
   }
 
   private handleSelectMood(id: AtmosphereMoodId): void {
@@ -523,6 +998,7 @@ export class StudioApp extends xb.Script {
     this.miniSam.syncLightingState(this.stage.getLightingState());
     this.miniSam.syncMood(id);
     this.audioEngine.playStudioCue('select');
+    this.recordProjectMutation();
   }
 
   private handleToggleBrush(enabled: boolean): void {
@@ -539,9 +1015,11 @@ export class StudioApp extends xb.Script {
 
   private handleResetStudio(): void {
     this.stage.resetViewPose();
-    this.activeMoodId = 'studio';
+    this.activeMoodId = ENVIRONMENT_LEVEL_MAP[this.activeEnvironmentId]?.defaultMood || 'studio';
+    this.stage.setAtmosphereMood(this.activeMoodId);
     this.miniSam.syncLightingState(this.stage.getLightingState());
-    this.miniSam.syncMood('studio');
+    this.miniSam.syncMood(this.activeMoodId);
+    this.miniSam.syncStageDynamics(0, 0.28);
     this.cameraDirector.goToShot('establishing', 'glide');
     this.deckCard.resetSliders();
     this.deckCard.position.set(-0.78, 1.38, -1.08);
@@ -549,6 +1027,7 @@ export class StudioApp extends xb.Script {
     this.voiceCard.position.set(0.8, 1.38, -1.08);
     this.voiceCard.rotation.set(0, -0.38, 0);
     this.audioEngine.playStudioCue('ready');
+    this.recordProjectMutation();
   }
 
   private setPanelsVisible(visible: boolean): void {
@@ -565,7 +1044,8 @@ export class StudioApp extends xb.Script {
   private refreshHudSummary(): void {
     const subj = SUBJECT_MAP[this.activeSubjectId].label;
     const fin = FINISH_MAP[this.activeFinishId].label;
-    this.hudOverlay.setSummary(`${subj} • ${fin}`);
+    const env = ENVIRONMENT_LEVEL_MAP[this.activeEnvironmentId]?.label || 'Soundstage';
+    this.hudOverlay.setSummary(`${subj} • ${fin} • ${env}`);
   }
 
   private applyBeatVisuals(beat: MovieBeat): void {
@@ -574,6 +1054,7 @@ export class StudioApp extends xb.Script {
     this.miniSam.syncLightingState(this.stage.getLightingState());
     this.miniSam.syncMood(beat.mood);
     this.stage.setExplodeAmount(beat.explodeAmount);
+    this.miniSam.syncStageDynamics(beat.explodeAmount, this.stage.getSpinSpeed());
     this.stage.triggerTransitionEffect(beat.transitionType);
     this.cameraDirector.goToShot(beat.cameraShot, beat.transitionType);
   }
@@ -611,23 +1092,39 @@ export class StudioApp extends xb.Script {
       this.applyBeatVisuals(beat);
       this.miniSam.setSubtitle(`${beat.title} — ${beat.script}`);
 
-      try {
-        const res = await synthesizeSpeech(this.buildTtsRequestForBeat(beat));
-        if (token !== this.movieRunToken) return;
-        this.lastAudioBase64 = res.audioBase64;
-        this.miniSam.setStandaloneVoiceState(true, true);
-
-        await new Promise<void>((resolve) => {
-          void this.audioEngine
-            .playWavBase64(res.audioBase64, () => resolve())
-            .catch(() => resolve());
-        });
-      } catch (err) {
-        if (token !== this.movieRunToken) return;
-        this.miniSam.showToast(
-          err instanceof Error ? err.message : 'Beat narration failed.'
+      if (beat.muted) {
+        await new Promise<void>((resolve) =>
+          window.setTimeout(resolve, Math.max(1500, (beat.durationSec || 3) * 1000))
         );
-        await new Promise<void>((resolve) => window.setTimeout(resolve, 1800));
+      } else if (beat.audioAssetId) {
+        const audioAsset = this.mediaAssets.find((a) => a.id === beat.audioAssetId);
+        if (audioAsset?.runtimeFileBuffer) {
+          this.miniSam.setStandaloneVoiceState(true, Boolean(this.lastAudioBase64));
+          await new Promise<void>((resolve) => {
+            void this.audioEngine
+              .playArrayBuffer(audioAsset.runtimeFileBuffer!, () => resolve())
+              .catch(() => resolve());
+          });
+        }
+      } else {
+        try {
+          const res = await synthesizeSpeech(this.buildTtsRequestForBeat(beat));
+          if (token !== this.movieRunToken) return;
+          this.lastAudioBase64 = res.audioBase64;
+          this.miniSam.setStandaloneVoiceState(true, true);
+
+          await new Promise<void>((resolve) => {
+            void this.audioEngine
+              .playWavBase64(res.audioBase64, () => resolve())
+              .catch(() => resolve());
+          });
+        } catch (err) {
+          if (token !== this.movieRunToken) return;
+          this.miniSam.showToast(
+            err instanceof Error ? err.message : 'SamSpeak narration failed.'
+          );
+          await new Promise<void>((resolve) => window.setTimeout(resolve, 1800));
+        }
       }
 
       if (token !== this.movieRunToken) return;
@@ -638,7 +1135,7 @@ export class StudioApp extends xb.Script {
       this.miniSam.setMoviePlaybackState(false, -1);
       this.miniSam.setStandaloneVoiceState(false, Boolean(this.lastAudioBase64));
       this.miniSam.setSubtitle(null);
-      this.miniSam.showToast('Movie walkthrough complete.');
+      this.miniSam.showToast('SamScene movie walkthrough complete.');
     }
   }
 
@@ -657,17 +1154,17 @@ export class StudioApp extends xb.Script {
       const result = await synthesizeSpeech(request);
       this.lastAudioBase64 = result.audioBase64;
       this.voiceCard.setPlaybackState(true, true);
-      this.voiceCard.setStatus(`Playing (${result.model})...`);
+      this.voiceCard.setStatus(`SamSpeak active (${result.model})...`);
       this.miniSam.setStandaloneVoiceState(true, true);
       await this.audioEngine.playWavBase64(result.audioBase64, () => {
         this.voiceCard.setPlaybackState(false, Boolean(this.lastAudioBase64));
-        this.voiceCard.setStatus('Playback complete. Ready.');
+        this.voiceCard.setStatus('SamSpeak playback complete. Ready.');
         this.hudOverlay.setQuickSpeakBusy(false);
         this.miniSam.setStandaloneVoiceState(false, Boolean(this.lastAudioBase64));
         this.miniSam.setSubtitle(null);
       });
     } catch (error) {
-      const msg = error instanceof Error ? error.message : 'TTS failed.';
+      const msg = error instanceof Error ? error.message : 'SamSpeak synthesis failed.';
       this.voiceCard.setStatus(msg);
       this.voiceCard.setPlaybackState(false, Boolean(this.lastAudioBase64));
       this.hudOverlay.setQuickSpeakBusy(false);
@@ -684,7 +1181,7 @@ export class StudioApp extends xb.Script {
     const voice = this.voiceCard.getCurrentVoice();
     const style = this.voiceCard.getCurrentStyle();
 
-    this.voiceCard.setBusy(true, 'Synthesizing with gemini-3.8-flash-tts...');
+    this.voiceCard.setBusy(true, 'Synthesizing with SamSpeak...');
     try {
       if (mode === 'dual') {
         await this.handleSynthesize({
@@ -695,7 +1192,7 @@ export class StudioApp extends xb.Script {
           voiceA: voice === 'Puck' ? 'Kore' : 'Puck',
           voiceB: voice,
           styleA: style || 'Enthusiastic creative director',
-          styleB: 'Curious studio engineer',
+          styleB: 'Curious spatial designer',
         });
       } else {
         await this.handleSynthesize({
@@ -723,7 +1220,7 @@ export class StudioApp extends xb.Script {
 
   private handleDownloadAudio(): void {
     if (!this.lastAudioBase64) return;
-    const filename = `atelier-xr-${this.activeSubjectId}.wav`;
+    const filename = `samscene-${this.activeSubjectId}-samspeak.wav`;
     downloadWavBase64(this.lastAudioBase64, filename);
     this.voiceCard.setStatus(`Downloaded ${filename}`);
     this.miniSam.showToast(`Downloaded ${filename}`);
@@ -745,7 +1242,7 @@ export class StudioApp extends xb.Script {
       ];
       const { filename, byteLength } = await exportSceneAsGlb(
         exportTargets,
-        `samscenes-${this.activeSubjectId}`
+        `samscene-${this.activeSubjectId}`
       );
       const sizeKb = Math.max(1, Math.round(byteLength / 1024));
       this.audioEngine.playStudioCue('ready');
@@ -765,6 +1262,8 @@ export class StudioApp extends xb.Script {
 
     this.cameraDirector.update(dt);
     this.stage.updateStage(elapsed, dt, audio);
+    this.scenery.updateScenery(dt);
+    this.miniSam?.updateAudioVisualizer(audio, this.audioEngine.getPlaybackProgress());
 
     if (!this.uiValidated) {
       this.framesSinceInit++;
@@ -782,8 +1281,18 @@ export class StudioApp extends xb.Script {
 
   dispose(): void {
     this.movieRunToken++;
+    if (this.autoSaveTimer !== null) {
+      window.clearTimeout(this.autoSaveTimer);
+      this.autoSaveTimer = null;
+    }
     this.cleanupListeners.forEach((fn) => fn());
     this.cleanupListeners = [];
+    for (const asset of this.mediaAssets) {
+      if (asset.objectUrl) {
+        URL.revokeObjectURL(asset.objectUrl);
+      }
+    }
+    this.mediaAssets = [];
     this.cameraDirector.dispose();
     this.miniSam?.dispose();
     this.audioEngine.dispose();

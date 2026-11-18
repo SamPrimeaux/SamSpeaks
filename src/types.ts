@@ -4,6 +4,13 @@ export type StudioSubjectId = 'astrolabe' | 'pavilion' | 'vox' | 'terrarium';
 
 export type FinishId = 'gold' | 'titanium' | 'obsidian' | 'copper' | 'iridescent';
 
+export type EnvironmentLevelId =
+  | 'studio-stage'
+  | 'architectural-atrium'
+  | 'twilight-forest'
+  | 'coastal-observatory'
+  | 'orbital-lab';
+
 export type VoiceName =
   | 'Kore'
   | 'Puck'
@@ -38,6 +45,21 @@ export type AtmosphereMoodId = 'studio' | 'sunset' | 'twilight' | 'noir' | 'dawn
 
 export type SceneryPropType = 'pine' | 'boulders' | 'lantern' | 'arch';
 
+export type PlacedItemKind =
+  | SceneryPropType
+  | 'image'
+  | 'video'
+  | 'model'
+  | 'bim';
+
+export type ImportedAssetCategory =
+  | 'model'
+  | 'bim'
+  | 'image'
+  | 'video'
+  | 'audio'
+  | 'transcript';
+
 export interface SubjectMetadata {
   id: StudioSubjectId;
   label: string;
@@ -45,6 +67,15 @@ export interface SubjectMetadata {
   description: string;
   defaultSingleScript: string;
   defaultDualScript: string;
+}
+
+export interface EnvironmentLevelPreset {
+  id: EnvironmentLevelId;
+  label: string;
+  subtitle: string;
+  description: string;
+  defaultMood: AtmosphereMoodId;
+  swatchHex: string;
 }
 
 export interface FinishPreset {
@@ -92,6 +123,62 @@ export interface DroppedImageAsset {
   height: number;
 }
 
+export interface TranscriptCue {
+  startSec: number;
+  endSec: number;
+  speaker?: string;
+  text: string;
+}
+
+export interface BimSummary {
+  schema: string;
+  projectName: string;
+  buildingName: string;
+  storeys: Array<{ name: string; elevation: number }>;
+  elementCounts: Record<string, number>;
+  totalElements: number;
+  boundingBoxMeters: [number, number, number];
+}
+
+export interface StudioMediaAsset {
+  id: string;
+  category: ImportedAssetCategory;
+  name: string;
+  mimeType: string;
+  sizeBytes: number;
+  createdAt: number;
+  dataUrl?: string;
+  objectUrl?: string;
+  width?: number;
+  height?: number;
+  durationSec?: number;
+  waveformPeaks?: number[];
+  transcriptText?: string;
+  transcriptCues?: TranscriptCue[];
+  bimSummary?: BimSummary;
+  animationClipNames?: string[];
+  /** Non-serialized live references for 3D / audio instantiation */
+  runtimeFileBuffer?: ArrayBuffer;
+  runtimeModelRoot?: THREE.Group;
+  runtimeAnimations?: THREE.AnimationClip[];
+}
+
+export interface SelectedObjectDetails {
+  id: string;
+  kind: PlacedItemKind;
+  label: string;
+  position: [number, number, number];
+  rotationYDeg: number;
+  scale: number;
+  visible: boolean;
+  bimSummary?: BimSummary;
+  videoPlaying?: boolean;
+  videoMuted?: boolean;
+  animationClips?: string[];
+  activeAnimationIndex?: number;
+  animationPlaying?: boolean;
+}
+
 export interface MovieBeat {
   id: string;
   title: string;
@@ -103,6 +190,10 @@ export interface MovieBeat {
   transitionType: TransitionType;
   mood: AtmosphereMoodId;
   explodeAmount: number;
+  durationSec?: number;
+  audioAssetId?: string;
+  audioLabel?: string;
+  muted?: boolean;
 }
 
 export interface ComposeResponse {
@@ -171,3 +262,44 @@ export interface DynamicLightingState {
   keyAngle: number;
 }
 
+export interface SerializedSceneryItem {
+  id: string;
+  kind: PlacedItemKind;
+  label: string;
+  position: [number, number, number];
+  rotationY: number;
+  scale: number;
+  visible: boolean;
+  assetId?: string;
+  imageDataUrl?: string;
+  imageWidth?: number;
+  imageHeight?: number;
+}
+
+export interface SamSceneProjectManifest {
+  version: 1;
+  projectName: string;
+  updatedAt: number;
+  subjectId: StudioSubjectId;
+  finishId: FinishId;
+  environmentId: EnvironmentLevelId;
+  moodId: AtmosphereMoodId;
+  explodeAmount: number;
+  spinSpeed: number;
+  lighting: DynamicLightingState;
+  cameraPosition: [number, number, number];
+  cameraTarget: [number, number, number];
+  movieTitle: string;
+  beats: MovieBeat[];
+  activeBeatIndex: number;
+  voiceState: {
+    mode: TtsMode;
+    voiceName: VoiceName;
+    voiceStyle: string;
+    script: string;
+    volume: number;
+    muted: boolean;
+  };
+  sceneryItems: SerializedSceneryItem[];
+  savedImages: DroppedImageAsset[];
+}

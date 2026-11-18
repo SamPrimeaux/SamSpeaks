@@ -65,7 +65,7 @@ button {
 /* Left Slim Icon Rail */
 .ws-rail {
   order: 0;
-  width: 54px;
+  width: 56px;
   flex-shrink: 0;
   background: var(--bg-rail);
   border-right: 1px solid var(--border);
@@ -86,7 +86,7 @@ button {
 }
 
 .ws-rail-btn {
-  width: 42px;
+  width: 44px;
   height: 44px;
   border-radius: 10px;
   border: 1px solid transparent;
@@ -171,7 +171,8 @@ button {
   overflow: hidden;
 }
 
-.ws-viewport canvas {
+.ws-viewport canvas.webgl-main,
+.ws-viewport > canvas {
   display: block;
   width: 100% !important;
   height: 100% !important;
@@ -365,7 +366,7 @@ button {
 
 .ws-split-top {
   flex: 0 0 auto;
-  max-height: 54%;
+  max-height: 58%;
   overflow-y: auto;
   padding: 12px;
   display: flex;
@@ -386,7 +387,7 @@ button {
 }
 
 .ws-split-bottom {
-  min-height: 180px;
+  min-height: 170px;
 }
 
 /* Panels & Inputs */
@@ -398,6 +399,18 @@ button {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.ws-context-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  background: var(--bg-canvas);
+  border: 1px solid var(--artboard-border);
+  font-size: 11px;
+  color: var(--text-secondary);
 }
 
 .ws-label {
@@ -507,6 +520,12 @@ button {
 
 .ws-btn-ghost {
   background: var(--bg-elevated);
+}
+
+.ws-btn-danger {
+  background: rgba(255, 69, 58, 0.16);
+  border-color: rgba(255, 69, 58, 0.45);
+  color: #ff8a82;
 }
 
 .ws-mini-btn {
@@ -676,19 +695,159 @@ button {
   border: 1px solid rgba(255, 255, 255, 0.35);
 }
 
+/* Environment Level Cards */
+.ws-env-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.ws-env-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 8px 9px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  background: var(--bg-artboard);
+  color: var(--text-secondary);
+  text-align: left;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.ws-env-card:hover {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+.ws-env-card.is-active {
+  border-color: var(--accent);
+  background: rgba(10, 132, 255, 0.15);
+  color: var(--text-primary);
+}
+
+.ws-env-card-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.ws-env-card span {
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+/* Inspector & BIM Cards */
 .ws-selection-box {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 8px;
-  border-radius: 8px;
+  gap: 8px;
+  padding: 9px;
+  border-radius: 9px;
   background: var(--bg-artboard);
   border: 1px solid var(--artboard-border);
 }
 
 .ws-selection-text {
   font-size: 11px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.ws-inspector-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+
+.ws-num-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+.ws-num-field input {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-size: 11px;
+  padding: 4px 6px;
+  width: 100%;
+}
+
+.ws-bim-box {
+  padding: 7px 8px;
+  border-radius: 7px;
+  background: var(--bg-canvas);
+  border: 1px solid var(--border);
+  font-size: 11px;
   color: var(--text-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* Waveform & Asset Library */
+.ws-waveform-box {
+  background: var(--bg-canvas);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.ws-waveform-canvas {
+  width: 100%;
+  height: 36px;
+  display: block;
+}
+
+.ws-asset-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ws-asset-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 9px;
+  border-radius: 9px;
+  background: var(--bg-artboard);
+  border: 1px solid var(--artboard-border);
+}
+
+.ws-asset-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 0%;
+}
+
+.ws-asset-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ws-asset-meta {
+  font-size: 10px;
+  color: var(--text-tertiary);
 }
 
 .ws-sliders-col {
@@ -936,7 +1095,8 @@ button {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 8px;
   pointer-events: none;
   z-index: 6;
 }
@@ -945,7 +1105,8 @@ button {
 .ws-vp-right {
   display: flex;
   align-items: center;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 6px;
   pointer-events: auto;
 }
 
@@ -955,7 +1116,7 @@ button {
   gap: 8px;
   padding: 6px 12px;
   border-radius: 10px;
-  background: rgba(23, 23, 25, 0.9);
+  background: rgba(23, 23, 25, 0.92);
   border: 1px solid var(--border);
   font-size: 12px;
 }
@@ -969,23 +1130,15 @@ button {
   color: var(--text-secondary);
 }
 
-.ws-vp-hint {
-  padding: 6px 10px;
-  border-radius: 9px;
-  background: rgba(23, 23, 25, 0.85);
-  border: 1px solid var(--border);
-  font-size: 11px;
-  color: var(--text-secondary);
-}
-
 .ws-vp-pill {
-  padding: 6px 12px;
+  padding: 6px 11px;
   border-radius: 9px;
   border: 1px solid var(--border);
-  background: rgba(30, 30, 32, 0.92);
+  background: rgba(30, 30, 32, 0.94);
   color: var(--text-primary);
   font-size: 12px;
   font-weight: 600;
+  white-space: nowrap;
 }
 
 .ws-vp-pill:hover:not(:disabled) {
@@ -993,8 +1146,8 @@ button {
 }
 
 .ws-vp-pill:disabled {
-  opacity: 0.55;
-  cursor: wait;
+  opacity: 0.48;
+  cursor: not-allowed;
 }
 
 .ws-vp-accent {
@@ -1003,7 +1156,7 @@ button {
   color: #ffffff;
 }
 
-.ws-vp-accent:hover {
+.ws-vp-accent:hover:not(:disabled) {
   background: var(--accent-hover);
 }
 
@@ -1011,6 +1164,52 @@ button {
   background: var(--danger);
   border-color: var(--danger);
   color: #ffffff;
+}
+
+.ws-export-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.ws-export-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 215px;
+  padding: 6px;
+  border-radius: 10px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  z-index: 20;
+}
+
+.ws-export-item {
+  width: 100%;
+  text-align: left;
+  padding: 7px 9px;
+  border-radius: 7px;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ws-export-item small {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--text-tertiary);
+}
+
+.ws-export-item:hover {
+  background: var(--bg-elevated);
 }
 
 .ws-armed-banner {
@@ -1033,12 +1232,12 @@ button {
 .ws-subtitle {
   position: absolute;
   left: 50%;
-  bottom: 20px;
+  bottom: 74px;
   transform: translateX(-50%);
   max-width: min(720px, calc(100% - 36px));
   padding: 10px 16px;
   border-radius: 10px;
-  background: rgba(17, 17, 19, 0.92);
+  background: rgba(17, 17, 19, 0.94);
   border: 1px solid var(--border);
   color: var(--text-primary);
   font-size: 13px;
@@ -1060,10 +1259,66 @@ button {
   z-index: 8;
 }
 
+/* Collapsible Bottom Timeline Strip */
+.ws-timeline-bar {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  background: rgba(23, 23, 25, 0.95);
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  padding: 7px 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  z-index: 6;
+}
+
+.ws-timeline-bar.is-collapsed {
+  left: auto;
+  width: auto;
+  padding: 5px 10px;
+}
+
+.ws-timeline-tracks {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  flex: 1 1 0%;
+  min-width: 0;
+}
+
+.ws-tl-beat {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--bg-artboard);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.ws-tl-beat.is-active {
+  border-color: var(--accent);
+  background: rgba(10, 132, 255, 0.18);
+  color: var(--text-primary);
+}
+
+.ws-tl-beat.is-playing {
+  border-color: var(--success);
+}
+
 .ws-drop-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(17, 17, 19, 0.82);
+  background: rgba(17, 17, 19, 0.84);
   border: 2px dashed var(--accent);
   display: flex;
   align-items: center;
@@ -1083,6 +1338,7 @@ button {
   border: 1px solid var(--accent);
   font-size: 14px;
   color: var(--text-primary);
+  text-align: center;
 }
 
 .ws-drop-overlay-box span {
@@ -1091,18 +1347,26 @@ button {
 }
 
 @media (max-width: 960px) {
-  .ws-vp-hint {
+  .ws-vp-badge span {
     display: none;
   }
 }
 
 @media (max-width: 720px) {
+  .ws-rail {
+    width: 48px;
+    padding: 8px 4px;
+  }
+  .ws-rail-btn {
+    width: 40px;
+    height: 40px;
+  }
   .ws-side {
     position: absolute;
-    left: 54px;
+    left: 48px;
     top: 0;
     bottom: 0;
-    width: min(360px, calc(100vw - 54px));
+    width: min(335px, calc(100vw - 48px));
   }
   .ws-shell.is-dock-right .ws-side {
     left: auto;
@@ -1110,5 +1374,24 @@ button {
   }
   .ws-splitter {
     display: none;
+  }
+  .ws-viewport-hud {
+    top: 8px;
+    left: 8px;
+    right: 8px;
+    gap: 5px;
+  }
+  .ws-vp-pill {
+    padding: 5px 8px;
+    font-size: 11px;
+  }
+  .ws-vp-badge {
+    padding: 5px 8px;
+    font-size: 11px;
+  }
+  .ws-timeline-bar {
+    left: 8px;
+    right: 8px;
+    bottom: 8px;
   }
 }

@@ -6,6 +6,9 @@ export interface StudioTextureSet {
   turntableDial: THREE.CanvasTexture;
   studioFloor: THREE.CanvasTexture;
   micGrillBump: THREE.CanvasTexture;
+  stoneBump: THREE.CanvasTexture;
+  waterRippleBump: THREE.CanvasTexture;
+  hexDeckBump: THREE.CanvasTexture;
   dispose: () => void;
 }
 
@@ -59,7 +62,6 @@ export function createStudioTextures(maxAnisotropy: number): StudioTextureSet {
   dCtx.fillStyle = dGrad;
   dCtx.fillRect(0, 0, 1024, 1024);
 
-  // Concentric calibration rings
   dCtx.strokeStyle = 'rgba(180, 200, 235, 0.16)';
   dCtx.lineWidth = 2;
   for (const r of [140, 260, 380, 445, 488]) {
@@ -68,7 +70,6 @@ export function createStudioTextures(maxAnisotropy: number): StudioTextureSet {
     dCtx.stroke();
   }
 
-  // Degree ticks
   for (let deg = 0; deg < 360; deg += 5) {
     const rad = (deg * Math.PI) / 180;
     const isMajor = deg % 30 === 0;
@@ -126,7 +127,7 @@ export function createStudioTextures(maxAnisotropy: number): StudioTextureSet {
   studioFloor.colorSpace = THREE.SRGBColorSpace;
   studioFloor.anisotropy = anisotropy;
 
-  // 5. Condenser microphone perforated grille bump map (linear space)
+  // 5. Condenser microphone perforated grille bump map
   const grillCanvas = document.createElement('canvas');
   grillCanvas.width = 256;
   grillCanvas.height = 256;
@@ -155,18 +156,103 @@ export function createStudioTextures(maxAnisotropy: number): StudioTextureSet {
   micGrillBump.repeat.set(4, 3);
   micGrillBump.anisotropy = anisotropy;
 
+  // 6. Architectural stone / travertine vein bump texture
+  const stoneCanvas = document.createElement('canvas');
+  stoneCanvas.width = 512;
+  stoneCanvas.height = 512;
+  const stCtx = stoneCanvas.getContext('2d')!;
+  stCtx.fillStyle = '#909090';
+  stCtx.fillRect(0, 0, 512, 512);
+  for (let i = 0; i < 420; i++) {
+    const x = Math.random() * 512;
+    const y = Math.random() * 512;
+    const w = 18 + Math.random() * 68;
+    const h = 2 + Math.random() * 5;
+    const shade = 110 + Math.floor(Math.random() * 75);
+    stCtx.fillStyle = `rgba(${shade},${shade},${shade},0.35)`;
+    stCtx.fillRect(x, y, w, h);
+  }
+  const stoneBump = new THREE.CanvasTexture(stoneCanvas);
+  stoneBump.wrapS = THREE.RepeatWrapping;
+  stoneBump.wrapT = THREE.RepeatWrapping;
+  stoneBump.repeat.set(4, 4);
+  stoneBump.anisotropy = anisotropy;
+
+  // 7. Ocean / reflecting pool ripple bump texture
+  const waterCanvas = document.createElement('canvas');
+  waterCanvas.width = 512;
+  waterCanvas.height = 512;
+  const wCtx = waterCanvas.getContext('2d')!;
+  wCtx.fillStyle = '#808080';
+  wCtx.fillRect(0, 0, 512, 512);
+  for (let y = 0; y < 512; y += 2) {
+    for (let x = 0; x < 512; x += 2) {
+      const n =
+        Math.sin(x * 0.06 + Math.cos(y * 0.05) * 2.1) * 0.5 +
+        Math.cos(y * 0.08 - x * 0.03) * 0.5;
+      const v = Math.max(0, Math.min(255, Math.round(128 + n * 52)));
+      wCtx.fillStyle = `rgb(${v},${v},${v})`;
+      wCtx.fillRect(x, y, 2, 2);
+    }
+  }
+  const waterRippleBump = new THREE.CanvasTexture(waterCanvas);
+  waterRippleBump.wrapS = THREE.RepeatWrapping;
+  waterRippleBump.wrapT = THREE.RepeatWrapping;
+  waterRippleBump.repeat.set(6, 6);
+  waterRippleBump.anisotropy = anisotropy;
+
+  // 8. Orbital hexagonal deck tile bump map
+  const hexCanvas = document.createElement('canvas');
+  hexCanvas.width = 512;
+  hexCanvas.height = 512;
+  const hCtx = hexCanvas.getContext('2d')!;
+  hCtx.fillStyle = '#b4b4b4';
+  hCtx.fillRect(0, 0, 512, 512);
+  hCtx.strokeStyle = '#3a3a3a';
+  hCtx.lineWidth = 3;
+  const r = 32;
+  const dx = r * 1.5;
+  const dy = r * Math.sqrt(3);
+  for (let row = -1; row < 512 / (dy * 0.5) + 2; row++) {
+    for (let col = -1; col < 512 / dx + 2; col++) {
+      const cxH = col * dx;
+      const cyH = row * dy + (col % 2 === 0 ? 0 : dy * 0.5);
+      hCtx.beginPath();
+      for (let k = 0; k < 6; k++) {
+        const a = (Math.PI / 3) * k;
+        const px = cxH + r * 0.94 * Math.cos(a);
+        const py = cyH + r * 0.94 * Math.sin(a);
+        if (k === 0) hCtx.moveTo(px, py);
+        else hCtx.lineTo(px, py);
+      }
+      hCtx.closePath();
+      hCtx.stroke();
+    }
+  }
+  const hexDeckBump = new THREE.CanvasTexture(hexCanvas);
+  hexDeckBump.wrapS = THREE.RepeatWrapping;
+  hexDeckBump.wrapT = THREE.RepeatWrapping;
+  hexDeckBump.repeat.set(4, 4);
+  hexDeckBump.anisotropy = anisotropy;
+
   return {
     radialShadow,
     brushedRoughness,
     turntableDial,
     studioFloor,
     micGrillBump,
+    stoneBump,
+    waterRippleBump,
+    hexDeckBump,
     dispose: () => {
       radialShadow.dispose();
       brushedRoughness.dispose();
       turntableDial.dispose();
       studioFloor.dispose();
       micGrillBump.dispose();
+      stoneBump.dispose();
+      waterRippleBump.dispose();
+      hexDeckBump.dispose();
     },
   };
 }

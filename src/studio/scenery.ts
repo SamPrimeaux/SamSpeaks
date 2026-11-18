@@ -1,15 +1,34 @@
 import * as THREE from 'three';
 import * as xb from 'xrblocks';
-import type { DroppedImageAsset, SceneryPropType } from '../types.ts';
+import type {
+  BimSummary,
+  DroppedImageAsset,
+  PlacedItemKind,
+  SceneryPropType,
+  SelectedObjectDetails,
+  SerializedSceneryItem,
+  StudioMediaAsset,
+} from '../types.ts';
 import { STAGE_POSITION } from './environment.ts';
 import type { StudioMaterialLibrary } from './materials.ts';
 import type { StudioTextureSet } from './textures.ts';
 
 export interface PlacedPropItem {
   id: string;
-  kind: SceneryPropType | 'image';
+  kind: PlacedItemKind;
   label: string;
   group: THREE.Group;
+  assetId?: string;
+  imageDataUrl?: string;
+  imageWidth?: number;
+  imageHeight?: number;
+  bimSummary?: BimSummary;
+  videoEl?: HTMLVideoElement;
+  videoTexture?: THREE.VideoTexture;
+  mixer?: THREE.AnimationMixer;
+  animations?: THREE.AnimationClip[];
+  activeClipIndex?: number;
+  animationPlaying?: boolean;
   dispose: () => void;
 }
 
@@ -19,9 +38,9 @@ const _groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 const _hitPoint = new THREE.Vector3();
 
 /**
- * Web-friendly 3D Scenery Maker & Dropped-Image Backdrop Manager.
- * Supports click-to-place on the studio floor, click-to-select, drag-to-move,
- * rotate, and remove for users without XR hardware.
+ * Web-friendly 3D Scenery, Media, Model & BIM Manager.
+ * Supports click-to-place, click-to-select, drag-to-move, inspector transforms,
+ * 3D video screens, glTF AnimationMixer clips, BIM buildings, and serialization.
  */
 export class SceneryManager extends xb.Script {
   private materials: StudioMaterialLibrary;
@@ -39,6 +58,7 @@ export class SceneryManager extends xb.Script {
   private selectionMat!: THREE.MeshBasicMaterial;
   private onSelectionChange?: (item: PlacedPropItem | null, count: number) => void;
   private onPlacementComplete?: () => void;
+  private onMutation?: () => void;
 
   constructor(
     materials: StudioMaterialLibrary,
@@ -46,6 +66,7 @@ export class SceneryManager extends xb.Script {
     callbacks?: {
       onSelectionChange?: (item: PlacedPropItem | null, count: number) => void;
       onPlacementComplete?: () => void;
+      onMutation?: () => void;
     }
   ) {
     super();
@@ -53,6 +74,7 @@ export class SceneryManager extends xb.Script {
     this.textures = textures;
     this.onSelectionChange = callbacks?.onSelectionChange;
     this.onPlacementComplete = callbacks?.onPlacementComplete;
+    this.onMutation = callbacks?.onMutation;
     this.propsRoot.name = 'SceneryPropsRoot';
     this.add(this.propsRoot);
 
@@ -72,10 +94,10 @@ export class SceneryManager extends xb.Script {
   }
 
   public seedStarterScenery(): void {
-    this.placePropAt('pine', new THREE.Vector3(-1.55, 0, -2.35), 0.2);
-    this.placePropAt('boulders', new THREE.Vector3(-1.2, 0, -2.1), 0.7);
-    this.placePropAt('lantern', new THREE.Vector3(1.38, 0, -2.05), -0.5);
-    this.placePropAt('pine', new THREE.Vector3(1.75, 0, -2.45), 1.1);
+    this.placePropAt('pine', new THREE.Vector3(-1.55, 0, -2.35), 0.2, false);
+    this.placePropAt('boulders', new THREE.Vector3(-1.2, 0, -2.1), 0.7, false);
+    this.placePropAt('lantern', new THREE.Vector3(1.38, 0, -2.05), -0.5, false);
+    this.placePropAt('pine', new THREE.Vector3(1.75, 0, -2.45), 1.1, false);
     this.selectItem(null);
   }
 
@@ -99,8 +121,105 @@ export class SceneryManager extends xb.Script {
     return this.items.find((i) => i.id === this.selectedId) ?? null;
   }
 
+  public getAllItems(): PlacedPropItem[] {
+    return this.items;
+  }
+
   public getItemCount(): number {
     return this.items.length;
+  }
+
+  public getSelectedObjectDetails(): SelectedObjectDetails | null {
+    const item = this.getSelectedItem();
+    if (!item) return null;
+    return {
+      id: item.id,
+      kind: item.kind,
+      label: item.label,
+      position: [
+        Number(item.group.position.x.toFixed(2)),
+        Number(item.group.position.y.toFixed(2)),
+        Number(item.group.position.z.toFixed(2)),
+      ],
+      rotationYDeg: Math.round(((item.group.rotation.y * 180) / Math.PI) % 360),
+      scale: Number(item.group.scale.x.toFixed(2)),
+      visible: item.group.visible,
+      bimSummary: item.bimSummary,
+      videoPlaying: item.videoEl ? !item.videoEl.paused : undefined,
+      videoMuted: item.videoEl ? item.videoEl.muted : undefined,
+      animationClips: item.animations?.map((a, idx) => a.name || `Clip ${idx + 1}`),
+      activeAnimationIndex: item.activeClipIndex,
+      animationPlaying: item.animationPlaying,
+    };
+  }
+
+  public setSelectedTransform(patch: {
+    x?: number;
+    y?: number;
+    z?: number;
+    rotationYDeg?: number;
+    scale?: number;
+    visible?: boolean;
+  }): void {
+    const item = this.getSelectedItem();
+    if (!item) return;
+    if (patch.x !== undefined) item.group.position.x = patch.x;
+    if (patch.y !== undefined) item.group.position.y = Math.max(0, patch.y);
+    if (patch.z !== undefined) item.group.position.z = patch.z;
+    if (patch.rotationYDeg !== undefined) {
+      item.group.rotation.y = (patch.rotationYDeg * Math.PI) / 180;
+    }
+    if (patch.scale !== undefined) {
+      const s = THREE.MathUtils.clamp(patch.scale, 0.25, 4);
+      item.group.scale.setScalar(s);
+    }
+    if (patch.visible !== undefined) {
+      item.group.visible = patch.visible;
+    }
+    this.updateSelectionRing();
+    this.onSelectionChange?.(item, this.items.length);
+    this.onMutation?.();
+  }
+
+  public toggleSelectedVideoPlay(): boolean {
+    const item = this.getSelectedItem();
+    if (!item?.videoEl) return false;
+    if (item.videoEl.paused) {
+      void item.videoEl.play();
+    } else {
+      item.videoEl.pause();
+    }
+    this.onSelectionChange?.(item, this.items.length);
+    return !item.videoEl.paused;
+  }
+
+  public toggleSelectedVideoMute(): boolean {
+    const item = this.getSelectedItem();
+    if (!item?.videoEl) return false;
+    item.videoEl.muted = !item.videoEl.muted;
+    this.onSelectionChange?.(item, this.items.length);
+    return item.videoEl.muted;
+  }
+
+  public selectAnimationClip(index: number): void {
+    const item = this.getSelectedItem();
+    if (!item?.mixer || !item.animations || !item.animations[index]) return;
+    item.mixer.stopAllAction();
+    item.activeClipIndex = index;
+    item.animationPlaying = true;
+    const action = item.mixer.clipAction(item.animations[index]);
+    action.reset().play();
+    this.onSelectionChange?.(item, this.items.length);
+  }
+
+  public toggleAnimationPlay(): void {
+    const item = this.getSelectedItem();
+    if (!item?.mixer || !item.animations || item.animations.length === 0) return;
+    const idx = item.activeClipIndex ?? 0;
+    const action = item.mixer.clipAction(item.animations[idx]);
+    item.animationPlaying = !item.animationPlaying;
+    action.paused = !item.animationPlaying;
+    this.onSelectionChange?.(item, this.items.length);
   }
 
   public getExportGroup(): THREE.Group {
@@ -121,7 +240,6 @@ export class SceneryManager extends xb.Script {
     const hit = _raycaster.ray.intersectPlane(_groundPlane, _hitPoint);
     if (!hit) return null;
 
-    // Keep within 4.2m studio floor radius
     const dx = hit.x - STAGE_POSITION.x;
     const dz = hit.z - STAGE_POSITION.z;
     const dist = Math.hypot(dx, dz);
@@ -143,7 +261,7 @@ export class SceneryManager extends xb.Script {
     _ndc.y = -((clientY - rect.top) / rect.height) * 2 + 1;
     _raycaster.setFromCamera(_ndc, camera);
 
-    const roots = this.items.map((i) => i.group);
+    const roots = this.items.filter((i) => i.group.visible).map((i) => i.group);
     const hits = _raycaster.intersectObjects(roots, true);
     if (hits.length === 0) return null;
 
@@ -184,8 +302,13 @@ export class SceneryManager extends xb.Script {
     if (!selected) return;
     const pt = this.raycastGround(clientX, clientY);
     if (!pt) return;
-    selected.group.position.set(pt.x, 0, pt.z);
+    selected.group.position.set(pt.x, selected.group.position.y, pt.z);
     this.updateSelectionRing();
+    this.onSelectionChange?.(selected, this.items.length);
+  }
+
+  public notifyDragEnded(): void {
+    this.onMutation?.();
   }
 
   public selectItem(id: string | null): void {
@@ -198,6 +321,8 @@ export class SceneryManager extends xb.Script {
     const item = this.getSelectedItem();
     if (!item) return;
     item.group.rotation.y += deltaRad;
+    this.onSelectionChange?.(item, this.items.length);
+    this.onMutation?.();
   }
 
   public deleteSelected(): void {
@@ -208,15 +333,17 @@ export class SceneryManager extends xb.Script {
     this.propsRoot.remove(removed.group);
     removed.dispose();
     this.selectItem(null);
+    this.onMutation?.();
   }
 
-  public clearAll(): void {
+  public clearAll(notify = true): void {
     for (const item of this.items) {
       this.propsRoot.remove(item.group);
       item.dispose();
     }
     this.items = [];
     this.selectItem(null);
+    if (notify) this.onMutation?.();
   }
 
   private updateSelectionRing(): void {
@@ -227,12 +354,14 @@ export class SceneryManager extends xb.Script {
     }
     this.selectionRing.visible = true;
     this.selectionRing.position.set(item.group.position.x, 0.012, item.group.position.z);
+    this.selectionRing.scale.setScalar(Math.max(0.8, item.group.scale.x));
   }
 
   public placePropAt(
     type: SceneryPropType,
     position: THREE.Vector3,
-    rotationY = 0
+    rotationY = 0,
+    notify = true
   ): PlacedPropItem {
     const id = `prop-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     const built = this.buildProceduralProp(type);
@@ -249,19 +378,20 @@ export class SceneryManager extends xb.Script {
     };
     this.items.push(item);
     this.selectItem(id);
+    if (notify) this.onMutation?.();
     return item;
   }
 
   public placeImageBackdrop(
     asset: DroppedImageAsset,
-    position?: THREE.Vector3
+    position?: THREE.Vector3,
+    notify = true
   ): PlacedPropItem {
     const id = `img-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     const pos =
       position ??
       new THREE.Vector3(
-        (this.items.filter((i) => i.kind === 'image').length % 2 === 0 ? -1 : 1) *
-          0.95,
+        (this.items.filter((i) => i.kind === 'image').length % 2 === 0 ? -1 : 1) * 0.95,
         0,
         -2.25
       );
@@ -274,13 +404,261 @@ export class SceneryManager extends xb.Script {
     const item: PlacedPropItem = {
       id,
       kind: 'image',
-      label: asset.name.slice(0, 18),
+      label: asset.name.slice(0, 22),
       group: built.group,
+      assetId: asset.id,
+      imageDataUrl: asset.dataUrl,
+      imageWidth: asset.width,
+      imageHeight: asset.height,
       dispose: built.dispose,
     };
     this.items.push(item);
     this.selectItem(id);
+    if (notify) this.onMutation?.();
     return item;
+  }
+
+  public placeVideoScreen(
+    asset: StudioMediaAsset,
+    position?: THREE.Vector3
+  ): PlacedPropItem {
+    const id = `vid-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const pos =
+      position ??
+      new THREE.Vector3(
+        (this.items.filter((i) => i.kind === 'video').length % 2 === 0 ? 1 : -1) * 1.15,
+        0,
+        -2.1
+      );
+
+    const group = new THREE.Group();
+    group.name = `VideoScreen_${asset.name}`;
+    const geometries: THREE.BufferGeometry[] = [];
+    const track = <T extends THREE.BufferGeometry>(g: T): T => {
+      geometries.push(g);
+      return g;
+    };
+
+    const aspect =
+      asset.width && asset.height && asset.height > 0
+        ? THREE.MathUtils.clamp(asset.width / asset.height, 0.6, 2.2)
+        : 16 / 9;
+    const panelH = 0.78;
+    const panelW = panelH * aspect;
+    const centerY = 0.98;
+
+    const footGeo = track(new THREE.BoxGeometry(0.56, 0.036, 0.28));
+    const foot = new THREE.Mesh(footGeo, this.materials.slatePlinth);
+    foot.position.y = 0.018;
+    foot.castShadow = true;
+    group.add(foot);
+
+    const postGeo = track(new THREE.CylinderGeometry(0.018, 0.024, 0.96, 16));
+    const post = new THREE.Mesh(postGeo, this.materials.secondaryMetal);
+    post.position.set(0, 0.5, -0.02);
+    post.castShadow = true;
+    group.add(post);
+
+    const bezelGeo = track(new THREE.BoxGeometry(panelW + 0.06, panelH + 0.06, 0.036));
+    const bezel = new THREE.Mesh(bezelGeo, this.materials.slatePlinth);
+    bezel.position.set(0, centerY, -0.006);
+    bezel.castShadow = true;
+    group.add(bezel);
+
+    const videoEl = document.createElement('video');
+    videoEl.src = asset.objectUrl || '';
+    videoEl.loop = true;
+    videoEl.muted = true;
+    videoEl.playsInline = true;
+    videoEl.crossOrigin = 'anonymous';
+    void videoEl.play().catch(() => {});
+
+    const videoTex = new THREE.VideoTexture(videoEl);
+    videoTex.colorSpace = THREE.SRGBColorSpace;
+
+    const screenMat = new THREE.MeshStandardMaterial({
+      map: videoTex,
+      roughness: 0.28,
+      metalness: 0.05,
+      emissive: 0xffffff,
+      emissiveMap: videoTex,
+      emissiveIntensity: 0.35,
+    });
+    const screenGeo = track(new THREE.PlaneGeometry(panelW, panelH));
+    const screen = new THREE.Mesh(screenGeo, screenMat);
+    screen.position.set(0, centerY, 0.016);
+    group.add(screen);
+
+    group.position.set(pos.x, 0, pos.z);
+    group.lookAt(STAGE_POSITION.x, 0, STAGE_POSITION.z + 1.2);
+    this.propsRoot.add(group);
+
+    const item: PlacedPropItem = {
+      id,
+      kind: 'video',
+      label: asset.name.slice(0, 22),
+      group,
+      assetId: asset.id,
+      videoEl,
+      videoTexture: videoTex,
+      dispose: () => {
+        videoEl.pause();
+        videoEl.src = '';
+        videoTex.dispose();
+        screenMat.dispose();
+        geometries.forEach((g) => g.dispose());
+      },
+    };
+    this.items.push(item);
+    this.selectItem(id);
+    this.onMutation?.();
+    return item;
+  }
+
+  public placeImportedModelAsset(
+    asset: StudioMediaAsset,
+    position?: THREE.Vector3
+  ): PlacedPropItem | null {
+    if (!asset.runtimeModelRoot) return null;
+    const isBim = asset.category === 'bim';
+    const id = `${isBim ? 'bim' : 'mdl'}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const existingCount = this.items.filter(
+      (i) => i.kind === 'model' || i.kind === 'bim'
+    ).length;
+    const angle = existingCount * 0.9 - 0.6;
+    const pos =
+      position ??
+      new THREE.Vector3(
+        STAGE_POSITION.x + Math.sin(angle) * 1.15,
+        0,
+        STAGE_POSITION.z + Math.cos(angle) * 0.95 - 0.35
+      );
+
+    // Clone geometry wrapper so placing twice from Asset Library creates independent instances
+    const modelInstance = asset.runtimeModelRoot.clone(true);
+
+    // Add sleek architectural plinth ring under imported 3D / BIM assets
+    const group = new THREE.Group();
+    group.name = `${isBim ? 'BIM' : 'Model'}_${asset.name}`;
+    const plinthGeo = new THREE.CylinderGeometry(0.46, 0.5, 0.036, 32);
+    const plinth = new THREE.Mesh(plinthGeo, this.materials.slatePlinth);
+    plinth.position.y = 0.018;
+    plinth.receiveShadow = true;
+    plinth.castShadow = true;
+    group.add(plinth);
+
+    modelInstance.position.y += 0.036;
+    group.add(modelInstance);
+    group.position.set(pos.x, 0, pos.z);
+    this.propsRoot.add(group);
+
+    let mixer: THREE.AnimationMixer | undefined;
+    const animations = asset.runtimeAnimations;
+    let activeClipIndex: number | undefined;
+    let animationPlaying = false;
+    if (animations && animations.length > 0) {
+      mixer = new THREE.AnimationMixer(modelInstance);
+      activeClipIndex = 0;
+      animationPlaying = true;
+      mixer.clipAction(animations[0]).play();
+    }
+
+    const item: PlacedPropItem = {
+      id,
+      kind: isBim ? 'bim' : 'model',
+      label: asset.name.slice(0, 22),
+      group,
+      assetId: asset.id,
+      bimSummary: asset.bimSummary,
+      mixer,
+      animations,
+      activeClipIndex,
+      animationPlaying,
+      dispose: () => {
+        mixer?.stopAllAction();
+        plinthGeo.dispose();
+      },
+    };
+    this.items.push(item);
+    this.selectItem(id);
+    this.onMutation?.();
+    return item;
+  }
+
+  public updateScenery(dt: number): void {
+    for (const item of this.items) {
+      if (item.mixer && item.animationPlaying) {
+        item.mixer.update(dt);
+      }
+    }
+  }
+
+  public serializeItems(): SerializedSceneryItem[] {
+    return this.items.map((item) => ({
+      id: item.id,
+      kind: item.kind,
+      label: item.label,
+      position: [
+        Number(item.group.position.x.toFixed(3)),
+        Number(item.group.position.y.toFixed(3)),
+        Number(item.group.position.z.toFixed(3)),
+      ],
+      rotationY: Number(item.group.rotation.y.toFixed(4)),
+      scale: Number(item.group.scale.x.toFixed(3)),
+      visible: item.group.visible,
+      assetId: item.assetId,
+      imageDataUrl: item.imageDataUrl,
+      imageWidth: item.imageWidth,
+      imageHeight: item.imageHeight,
+    }));
+  }
+
+  public restoreSerializedItems(
+    serialized: SerializedSceneryItem[],
+    mediaAssets: StudioMediaAsset[]
+  ): void {
+    this.clearAll(false);
+    for (const entry of serialized) {
+      const pos = new THREE.Vector3(entry.position[0], entry.position[1], entry.position[2]);
+      let created: PlacedPropItem | null = null;
+
+      if (
+        entry.kind === 'pine' ||
+        entry.kind === 'boulders' ||
+        entry.kind === 'lantern' ||
+        entry.kind === 'arch'
+      ) {
+        created = this.placePropAt(entry.kind, pos, entry.rotationY, false);
+      } else if (entry.kind === 'image' && entry.imageDataUrl) {
+        created = this.placeImageBackdrop(
+          {
+            id: entry.assetId || entry.id,
+            name: entry.label,
+            mimeType: 'image/jpeg',
+            dataUrl: entry.imageDataUrl,
+            width: entry.imageWidth || 800,
+            height: entry.imageHeight || 600,
+          },
+          pos,
+          false
+        );
+      } else if (entry.assetId) {
+        const found = mediaAssets.find((a) => a.id === entry.assetId);
+        if (found && (found.category === 'model' || found.category === 'bim')) {
+          created = this.placeImportedModelAsset(found, pos);
+        } else if (found && found.category === 'video') {
+          created = this.placeVideoScreen(found, pos);
+        }
+      }
+
+      if (created) {
+        created.group.position.set(entry.position[0], entry.position[1], entry.position[2]);
+        created.group.rotation.y = entry.rotationY;
+        created.group.scale.setScalar(entry.scale || 1);
+        created.group.visible = entry.visible !== false;
+      }
+    }
+    this.selectItem(null);
   }
 
   private buildImageFrameGroup(asset: DroppedImageAsset): {
@@ -304,14 +682,12 @@ export class SceneryManager extends xb.Script {
     const panelW = panelH * aspect;
     const centerY = 0.92;
 
-    // 1. Contact shadow
     const shadowGeo = track(new THREE.PlaneGeometry(0.65, 0.45));
     shadowGeo.rotateX(-Math.PI / 2);
     const shadow = new THREE.Mesh(shadowGeo, this.materials.contactShadow);
     shadow.position.y = 0.005;
     group.add(shadow);
 
-    // 2. Weighted studio stand base + twin riser posts
     const footGeo = track(new THREE.BoxGeometry(0.46, 0.032, 0.24));
     const foot = new THREE.Mesh(footGeo, this.materials.slatePlinth);
     foot.position.y = 0.016;
@@ -328,14 +704,12 @@ export class SceneryManager extends xb.Script {
     postR.castShadow = true;
     group.add(postL, postR);
 
-    // 3. Beveled outer studio bezel frame
     const bezelGeo = track(new THREE.BoxGeometry(panelW + 0.06, panelH + 0.06, 0.035));
     const bezel = new THREE.Mesh(bezelGeo, this.materials.heroMetal);
     bezel.position.set(0, centerY, -0.005);
     bezel.castShadow = true;
     group.add(bezel);
 
-    // 4. Dropped Image Canvas Plane (SRGBColorSpace)
     const imgEl = new Image();
     imgEl.src = asset.dataUrl;
     const tex = new THREE.Texture(imgEl);
@@ -510,7 +884,7 @@ export class SceneryManager extends xb.Script {
   }
 
   dispose(): void {
-    this.clearAll();
+    this.clearAll(false);
     this.selectionGeo.dispose();
     this.selectionMat.dispose();
   }

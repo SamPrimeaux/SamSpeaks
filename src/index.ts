@@ -3,9 +3,9 @@ import { StudioApp } from './StudioApp.ts';
 
 document.addEventListener('DOMContentLoaded', () => {
   const options = new xb.Options();
-  options.setAppTitle('Atelier XR — Creative Studio');
+  options.setAppTitle('SamScene — Creative Studio & SamSpeak');
   options.setAppDescription(
-    '3D Spatial Sculpting, PBR Lighting & Gemini 3.8 Flash TTS Voice Studio.'
+    'SamScene 3D environment studio, dynamic lighting, GLB/BIM/media ingestion & SamSpeak voice studio.'
   );
   options.enableReticles();
   options.enableControllers();

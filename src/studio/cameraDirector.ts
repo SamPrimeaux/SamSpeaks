@@ -79,6 +79,41 @@ export class CameraDirector {
     this.beginTransition(_goalPos, _goalTarget, transition);
   }
 
+  public getCameraState(): {
+    position: [number, number, number];
+    target: [number, number, number];
+  } {
+    const cam = xb.core.camera;
+    const pos = cam
+      ? ([
+          Number(cam.position.x.toFixed(3)),
+          Number(cam.position.y.toFixed(3)),
+          Number(cam.position.z.toFixed(3)),
+        ] as [number, number, number])
+      : ([0.35, 1.55, 1.05] as [number, number, number]);
+    const tgt = this.controls
+      ? ([
+          Number(this.controls.target.x.toFixed(3)),
+          Number(this.controls.target.y.toFixed(3)),
+          Number(this.controls.target.z.toFixed(3)),
+        ] as [number, number, number])
+      : ([0, 1.05, -1.25] as [number, number, number]);
+    return { position: pos, target: tgt };
+  }
+
+  public setCameraState(
+    position: [number, number, number],
+    target: [number, number, number]
+  ): void {
+    const cam = xb.core.camera;
+    if (!cam || !this.controls) return;
+    this.transitionActive = false;
+    this.autoTour = false;
+    cam.position.set(position[0], position[1], position[2]);
+    this.controls.target.set(target[0], target[1], target[2]);
+    this.controls.update();
+  }
+
   private beginTransition(
     pos: THREE.Vector3,
     target: THREE.Vector3,

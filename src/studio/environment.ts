@@ -7,11 +7,13 @@ import type {
   AtmosphereMoodId,
   AudioLevels,
   DynamicLightingState,
+  EnvironmentLevelId,
   FinishId,
   StudioSubjectId,
   StudioSubjectInstance,
   TransitionType,
 } from '../types.ts';
+import { EnvironmentLevelManager } from './environmentLevels.ts';
 import { detectSoftwareWebGL, StudioMaterialLibrary } from './materials.ts';
 import { createStudioSubject } from './subjects.ts';
 import { createStudioTextures, type StudioTextureSet } from './textures.ts';
@@ -50,11 +52,13 @@ export class StudioStage extends xb.Script {
   private subjectAnchor = new THREE.Group();
   private spectrumMesh!: THREE.InstancedMesh;
   private speakerVuRing!: THREE.Mesh;
+  private levelManager!: EnvironmentLevelManager;
 
   private activeSubject: StudioSubjectInstance | null = null;
   private currentSubjectId: StudioSubjectId = 'astrolabe';
   private currentFinishId: FinishId = 'gold';
   private currentMoodId: AtmosphereMoodId = 'studio';
+  private currentEnvironmentId: EnvironmentLevelId = 'studio-stage';
 
   private targetExplode = 0;
   private currentExplode = 0;
@@ -119,6 +123,13 @@ export class StudioStage extends xb.Script {
 
     this.setupLighting();
     this.buildStageEnvironment();
+    this.levelManager = new EnvironmentLevelManager(
+      this.stageGroup,
+      this.materials,
+      this.textures
+    );
+    this.levelManager.init();
+    this.setEnvironmentLevel(this.currentEnvironmentId);
     this.setSubject(this.currentSubjectId);
     this.setFinish(this.currentFinishId);
     this.setAtmosphereMood(this.currentMoodId, true);
@@ -472,6 +483,19 @@ export class StudioStage extends xb.Script {
     this.materials.applyFinish(FINISH_MAP[id]);
   }
 
+  public setEnvironmentLevel(id: EnvironmentLevelId): void {
+    this.currentEnvironmentId = id;
+    this.levelManager?.setLevel(id);
+    if (this.floorMesh) {
+      // Keep studio cyclorama textured disc for soundstage & subtle plinth base under other worlds
+      this.floorMesh.visible = id === 'studio-stage' || id === 'orbital-lab';
+    }
+  }
+
+  public getEnvironmentLevelId(): EnvironmentLevelId {
+    return this.currentEnvironmentId;
+  }
+
   public setAtmosphereMood(id: AtmosphereMoodId, immediate = false): void {
     this.currentMoodId = id;
     const preset = ATMOSPHERE_MAP[id];
@@ -569,6 +593,14 @@ export class StudioStage extends xb.Script {
     this.setAtmosphereMood(this.currentMoodId);
   }
 
+  public getExplodeAmount(): number {
+    return Number(this.targetExplode.toFixed(2));
+  }
+
+  public getSpinSpeed(): number {
+    return Number(this.targetSpinSpeed.toFixed(2));
+  }
+
   public getLightingState(): DynamicLightingState {
     return {
       keyIntensity: Number(this.targetKeyIntensity.toFixed(2)),
@@ -579,6 +611,14 @@ export class StudioStage extends xb.Script {
       shadowSoftness: Number(this.targetShadowSoftness.toFixed(2)),
       keyAngle: Number(this.targetKeyAngle.toFixed(2)),
     };
+  }
+
+  public applyLightingState(state: DynamicLightingState): void {
+    this.setKeyLightIntensity(state.keyIntensity);
+    this.setAmbientColorHsl(state.ambientHue, state.ambientSaturation);
+    this.setAmbientIntensity(state.ambientIntensity);
+    this.setShadowSoftness(state.shadowSoftness);
+    this.setKeyLightAngle(state.keyAngle);
   }
 
   private syncSoftboxIntensities(keyIntensity: number): void {
@@ -745,6 +785,7 @@ export class StudioStage extends xb.Script {
       this.applyExplodeImmediate(this.currentExplode);
       this.activeSubject.updateAnimation(elapsed, dt, audio);
     }
+    this.levelManager?.update(elapsed, dt);
 
     const vuScale = 1 + audio.low * 0.14;
     this.speakerVuRing.scale.set(vuScale, vuScale, 1);
@@ -773,6 +814,7 @@ export class StudioStage extends xb.Script {
       this.activeSubject.dispose();
       this.activeSubject = null;
     }
+    this.levelManager?.dispose();
     this.stageGeometries.forEach((g) => g.dispose());
     this.stageGeometries = [];
     this.spectrumMaterial?.dispose();

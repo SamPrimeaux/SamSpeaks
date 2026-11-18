@@ -1,9 +1,17 @@
 import type { AudioLevels } from '../types.ts';
 import { base64ToUint8Array } from './ttsService.ts';
 
+export interface PlaybackProgress {
+  isPlaying: boolean;
+  currentTime: number;
+  duration: number;
+  volume: number;
+  muted: boolean;
+}
+
 /**
- * Zero-dependency Web Audio engine for WAV playback, real-time FFT analysis,
- * and procedural spatial UI feedback tones.
+ * Web Audio engine for SamSpeak TTS WAV & imported audio playback,
+ * volume/mute mixing, waveform peak extraction, and real-time FFT analysis.
  */
 export class AudioEngine {
   private context: AudioContext | null = null;
@@ -13,6 +21,11 @@ export class AudioEngine {
   private freqData: Uint8Array<ArrayBuffer> | null = null;
   private isPlayingAudio = false;
   private onEndedCallback: (() => void) | null = null;
+
+  private volume = 0.92;
+  private muted = false;
+  private startedAtCtxTime = 0;
+  private currentDuration = 0;
 
   public readonly levels: AudioLevels = {
     overall: 0,
@@ -33,7 +46,7 @@ export class AudioEngine {
       this.analyser.fftSize = 256;
       this.analyser.smoothingTimeConstant = 0.78;
       this.masterGain = this.context.createGain();
-      this.masterGain.gain.value = 0.92;
+      this.applyGain();
       this.analyser.connect(this.masterGain);
       this.masterGain.connect(this.context.destination);
       this.freqData = new Uint8Array(new ArrayBuffer(this.analyser.frequencyBinCount));
@@ -44,18 +57,59 @@ export class AudioEngine {
     return this.context;
   }
 
-  async playWavBase64(base64: string, onEnded?: () => void): Promise<void> {
-    this.stop();
-    const ctx = this.ensureContext();
-    if (!this.analyser) return;
+  private applyGain(): void {
+    if (!this.masterGain) return;
+    this.masterGain.gain.value = this.muted ? 0 : this.volume;
+  }
 
+  public setVolume(value: number): void {
+    this.volume = Math.max(0, Math.min(1, value));
+    this.applyGain();
+  }
+
+  public getVolume(): number {
+    return this.volume;
+  }
+
+  public setMuted(muted: boolean): void {
+    this.muted = muted;
+    this.applyGain();
+  }
+
+  public isMuted(): boolean {
+    return this.muted;
+  }
+
+  public getPlaybackProgress(): PlaybackProgress {
+    const current =
+      this.isPlayingAudio && this.context
+        ? Math.min(this.currentDuration, Math.max(0, this.context.currentTime - this.startedAtCtxTime))
+        : 0;
+    return {
+      isPlaying: this.isPlayingAudio,
+      currentTime: current,
+      duration: this.currentDuration,
+      volume: this.volume,
+      muted: this.muted,
+    };
+  }
+
+  async playWavBase64(base64: string, onEnded?: () => void): Promise<void> {
     const bytes = base64ToUint8Array(base64);
     const arrayBuffer = bytes.buffer.slice(
       bytes.byteOffset,
       bytes.byteOffset + bytes.byteLength
     ) as ArrayBuffer;
-    const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+    await this.playArrayBuffer(arrayBuffer, onEnded);
+  }
 
+  async playArrayBuffer(arrayBuffer: ArrayBuffer, onEnded?: () => void): Promise<void> {
+    this.stop();
+    const ctx = this.ensureContext();
+    if (!this.analyser) return;
+
+    const cloned = arrayBuffer.slice(0);
+    const audioBuffer = await ctx.decodeAudioData(cloned);
     const source = ctx.createBufferSource();
     source.buffer = audioBuffer;
     source.connect(this.analyser);
@@ -63,6 +117,8 @@ export class AudioEngine {
     this.activeSource = source;
     this.isPlayingAudio = true;
     this.levels.isPlaying = true;
+    this.currentDuration = audioBuffer.duration;
+    this.startedAtCtxTime = ctx.currentTime;
     this.onEndedCallback = onEnded ?? null;
 
     source.onended = () => {
@@ -70,6 +126,7 @@ export class AudioEngine {
         this.activeSource = null;
         this.isPlayingAudio = false;
         this.levels.isPlaying = false;
+        this.currentDuration = 0;
         const cb = this.onEndedCallback;
         this.onEndedCallback = null;
         cb?.();
@@ -77,6 +134,31 @@ export class AudioEngine {
     };
 
     source.start(0);
+  }
+
+  async analyzeAudioBuffer(arrayBuffer: ArrayBuffer, peakCount = 48): Promise<{
+    durationSec: number;
+    peaks: number[];
+  }> {
+    const ctx = this.ensureContext();
+    const audioBuffer = await ctx.decodeAudioData(arrayBuffer.slice(0));
+    const channel = audioBuffer.getChannelData(0);
+    const blockSize = Math.max(1, Math.floor(channel.length / peakCount));
+    const peaks: number[] = [];
+    for (let i = 0; i < peakCount; i++) {
+      const start = i * blockSize;
+      const end = Math.min(channel.length, start + blockSize);
+      let maxVal = 0;
+      for (let j = start; j < end; j++) {
+        const abs = Math.abs(channel[j]);
+        if (abs > maxVal) maxVal = abs;
+      }
+      peaks.push(Number(Math.min(1, maxVal * 1.15).toFixed(3)));
+    }
+    return {
+      durationSec: Number(audioBuffer.duration.toFixed(2)),
+      peaks,
+    };
   }
 
   stop(): void {
@@ -92,42 +174,45 @@ export class AudioEngine {
     }
     this.isPlayingAudio = false;
     this.levels.isPlaying = false;
+    this.currentDuration = 0;
     this.onEndedCallback = null;
   }
 
   /**
-   * Procedural Web Audio chime for tactile studio feedback (zero external files).
+   * Procedural Web Audio chime for tactile studio feedback.
    */
   playStudioCue(kind: 'select' | 'switch' | 'ready' | 'paint'): void {
+    if (this.muted) return;
     try {
       const ctx = this.ensureContext();
       const now = ctx.currentTime;
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
+      const levelScale = Math.max(0.1, this.volume);
 
       if (kind === 'select') {
         osc.type = 'sine';
         osc.frequency.setValueAtTime(520, now);
         osc.frequency.exponentialRampToValueAtTime(780, now + 0.06);
-        gain.gain.setValueAtTime(0.05, now);
+        gain.gain.setValueAtTime(0.05 * levelScale, now);
         gain.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
       } else if (kind === 'switch') {
         osc.type = 'triangle';
         osc.frequency.setValueAtTime(340, now);
         osc.frequency.exponentialRampToValueAtTime(510, now + 0.11);
-        gain.gain.setValueAtTime(0.07, now);
+        gain.gain.setValueAtTime(0.07 * levelScale, now);
         gain.gain.exponentialRampToValueAtTime(0.001, now + 0.14);
       } else if (kind === 'ready') {
         osc.type = 'sine';
         osc.frequency.setValueAtTime(587.33, now);
         osc.frequency.setValueAtTime(880, now + 0.07);
-        gain.gain.setValueAtTime(0.06, now);
+        gain.gain.setValueAtTime(0.06 * levelScale, now);
         gain.gain.exponentialRampToValueAtTime(0.001, now + 0.22);
       } else {
         osc.type = 'sine';
         osc.frequency.setValueAtTime(660, now);
         osc.frequency.exponentialRampToValueAtTime(440, now + 0.05);
-        gain.gain.setValueAtTime(0.035, now);
+        gain.gain.setValueAtTime(0.035 * levelScale, now);
         gain.gain.exponentialRampToValueAtTime(0.001, now + 0.06);
       }
 

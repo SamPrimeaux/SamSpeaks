@@ -142,7 +142,7 @@ export class VoiceStudioCard extends xb.UICard {
 
     const assistButton = new xb.UIButton({
       label: 'AI Script',
-      icon: 'auto_awesome',
+      icon: 'wand_stars',
       style: {
         flexGrow: 1,
         height: 34,
@@ -288,11 +288,11 @@ export class VoiceStudioCard extends xb.UICard {
               style: { flexGrow: 1, flexDirection: 'column', gap: 2 },
               children: [
                 new xb.UIText({
-                  text: 'Voice & Sound Studio',
+                  text: 'SamSpeak Voice Studio',
                   style: { fontSize: 22, fontWeight: 'bold' },
                 }),
                 new xb.UIText({
-                  text: 'Gemini 3.8 Flash TTS • Voice Design & Audio Reactive',
+                  text: 'Gemini 3.8 Flash TTS • Narration & Audio Reactive',
                   style: { fontSize: 13, opacity: 0.72 },
                 }),
               ],

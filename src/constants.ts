@@ -3,6 +3,8 @@ import type {
   AtmospherePreset,
   CameraShotId,
   CameraShotPreset,
+  EnvironmentLevelId,
+  EnvironmentLevelPreset,
   FinishId,
   FinishPreset,
   MovieBeat,
@@ -13,6 +15,62 @@ import type {
   VoiceName,
 } from './types.ts';
 
+export const ENVIRONMENT_LEVELS: EnvironmentLevelPreset[] = [
+  {
+    id: 'studio-stage',
+    label: 'Soundstage',
+    subtitle: 'Calibrated Cyclorama',
+    description:
+      'Precision circular studio floor with dual specular ring inlays, turntable pedestal, boom mic, and acoustic monitor.',
+    defaultMood: 'studio',
+    swatchHex: '#0a84ff',
+  },
+  {
+    id: 'architectural-atrium',
+    label: 'Atrium Hall',
+    subtitle: 'Travertine & Colonnade',
+    description:
+      'Monumental museum gallery with fluted travertine columns, recessed basalt reflecting basin, and louvered skylight beams.',
+    defaultMood: 'dawn',
+    swatchHex: '#d9c3a3',
+  },
+  {
+    id: 'twilight-forest',
+    label: 'Pine Clearing',
+    subtitle: 'Moss Terrain & Lanterns',
+    description:
+      'Multi-layered twilight forest clearing with stepped flagstone path, instanced evergreens, boulders, and glowing trail lamps.',
+    defaultMood: 'twilight',
+    swatchHex: '#3f8a62',
+  },
+  {
+    id: 'coastal-observatory',
+    label: 'Cliffside Deck',
+    subtitle: 'Ocean Horizon & Pier',
+    description:
+      'Basalt coastal overlook ringed by brushed steel balustrades above an animated tidal plane and distant beacon tower.',
+    defaultMood: 'sunset',
+    swatchHex: '#e69951',
+  },
+  {
+    id: 'orbital-lab',
+    label: 'Orbital Bay',
+    subtitle: 'Hex Deck & Starfield',
+    description:
+      'Zero-gravity telemetry deck with hexagonal deck plates, glowing gyroscope gantries, articulated sensor pylons, and star dome.',
+    defaultMood: 'noir',
+    swatchHex: '#6e76d6',
+  },
+];
+
+export const ENVIRONMENT_LEVEL_MAP: Record<EnvironmentLevelId, EnvironmentLevelPreset> = {
+  'studio-stage': ENVIRONMENT_LEVELS[0],
+  'architectural-atrium': ENVIRONMENT_LEVELS[1],
+  'twilight-forest': ENVIRONMENT_LEVELS[2],
+  'coastal-observatory': ENVIRONMENT_LEVELS[3],
+  'orbital-lab': ENVIRONMENT_LEVELS[4],
+};
+
 export const SUBJECT_LIST: SubjectMetadata[] = [
   {
     id: 'astrolabe',
@@ -21,7 +79,7 @@ export const SUBJECT_LIST: SubjectMetadata[] = [
     description:
       'A multi-axis gimbal sculpture with brushed metal rings, optical crystal core, and audio-reactive harmonic chimes.',
     defaultSingleScript:
-      'Welcome to Atelier XR. <breath> Notice how the brushed gimbal rings catch the studio key light while the crystal core resonates with every word.',
+      'Welcome to SamScene. <breath> Notice how the brushed gimbal rings catch the studio key light while SamSpeak resonates through the crystal core.',
     defaultDualScript:
       'Alex: Look at the specular sheen across that outer gimbal! <breath> It feels sculptural.\nSam: |yeah| And every syllable pulses right through the harmonic chimes.',
   },
@@ -43,9 +101,9 @@ export const SUBJECT_LIST: SubjectMetadata[] = [
     description:
       'An articulated robotic creative assistant featuring a glowing waveform visor, dual studio boom antennae, and responsive head motion.',
     defaultSingleScript:
-      'Hello creator! <laugh> I am Vox Zero One, your spatial studio companion, tuned and ready to bring your concepts to life.',
+      'Hello creator! <laugh> I am Vox Zero One, your SamSpeak studio companion, tuned and ready to bring your scenes to life.',
     defaultDualScript:
-      'Alex: Vox Zero One is online! <breath> Look at its visor tracking the cadence of my voice.\nSam: |yeah| Try switching finishes from brushed gold to iridescent chrome.',
+      'Alex: Vox Zero One is online! <breath> Look at its visor tracking the cadence of my voice.\nSam: |yeah| Try switching finishes from brushed gold to iridescent prism.',
   },
   {
     id: 'terrarium',
@@ -144,7 +202,7 @@ export const ATMOSPHERE_LIST: AtmospherePreset[] = [
     label: 'Studio',
     swatchHex: '#0a84ff',
     fogColor: 0x131314,
-    fogDensity: 0.05,
+    fogDensity: 0.042,
     keyColor: 0xfff0da,
     keyIntensity: 2.6,
     hemiSky: 0xd0e2ff,
@@ -159,7 +217,7 @@ export const ATMOSPHERE_LIST: AtmospherePreset[] = [
     label: 'Golden',
     swatchHex: '#e69951',
     fogColor: 0x211415,
-    fogDensity: 0.06,
+    fogDensity: 0.048,
     keyColor: 0xffb36b,
     keyIntensity: 3.1,
     hemiSky: 0xffcda3,
@@ -174,7 +232,7 @@ export const ATMOSPHERE_LIST: AtmospherePreset[] = [
     label: 'Twilight',
     swatchHex: '#6e76d6',
     fogColor: 0x0e1026,
-    fogDensity: 0.075,
+    fogDensity: 0.056,
     keyColor: 0xb7c6ff,
     keyIntensity: 2.1,
     hemiSky: 0x7d8be8,
@@ -189,7 +247,7 @@ export const ATMOSPHERE_LIST: AtmospherePreset[] = [
     label: 'Noir',
     swatchHex: '#434b5c',
     fogColor: 0x06080d,
-    fogDensity: 0.085,
+    fogDensity: 0.062,
     keyColor: 0xf4f7ff,
     keyIntensity: 3.2,
     hemiSky: 0x5c6882,
@@ -204,7 +262,7 @@ export const ATMOSPHERE_LIST: AtmospherePreset[] = [
     label: 'Dawn',
     swatchHex: '#5fc29c',
     fogColor: 0x101c1c,
-    fogDensity: 0.052,
+    fogDensity: 0.04,
     keyColor: 0xffe8cc,
     keyIntensity: 2.5,
     hemiSky: 0xa6ebd6,
@@ -303,7 +361,7 @@ export const DEFAULT_STORYBOARD_BEATS: MovieBeat[] = [
     id: 'beat-1',
     title: '01 • Wide Establishing',
     script:
-      'Welcome to Atelier XR. <breath> Let us glide across the studio floor and begin our guided adventure.',
+      'Welcome to SamScene. <breath> Let us glide across the illuminated floor and begin our guided adventure.',
     ttsMode: 'single',
     voiceName: 'Kore',
     voiceStyle: 'Warm, cinematic documentary narrator',
@@ -311,6 +369,7 @@ export const DEFAULT_STORYBOARD_BEATS: MovieBeat[] = [
     transitionType: 'glide',
     mood: 'studio',
     explodeAmount: 0,
+    durationSec: 4,
   },
   {
     id: 'beat-2',
@@ -324,12 +383,13 @@ export const DEFAULT_STORYBOARD_BEATS: MovieBeat[] = [
     transitionType: 'dolly',
     mood: 'sunset',
     explodeAmount: 0.65,
+    durationSec: 4,
   },
   {
     id: 'beat-3',
     title: '03 • Twilight Finale',
     script:
-      'Alex: Look how the twilight rim light wraps the whole stage.\nSam: |yeah| Ready for the next scene whenever you are.',
+      'Alex: Look how the twilight rim light wraps the whole stage.\nSam: |yeah| SamSpeak is dialed in and ready for the next scene.',
     ttsMode: 'dual',
     voiceName: 'Puck',
     voiceStyle: 'Enthusiastic creative director',
@@ -337,6 +397,7 @@ export const DEFAULT_STORYBOARD_BEATS: MovieBeat[] = [
     transitionType: 'orbit',
     mood: 'twilight',
     explodeAmount: 0,
+    durationSec: 5,
   },
 ];
 
