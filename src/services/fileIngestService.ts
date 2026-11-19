@@ -8,6 +8,7 @@ import { PLYLoader } from 'three/addons/loaders/PLYLoader.js';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import type {
   DroppedImageAsset,
+  ExtractedVideoKeyframe,
   ModelAssetStats,
   MovieBeat,
   StudioMediaAsset,
@@ -399,6 +400,137 @@ async function parseThreeModelFile(
   throw new Error(`Unsupported 3D model format: .${ext}`);
 }
 
+/**
+ * Samples evenly spaced keyframes from a video URL using an offscreen HTML5 <video> and <canvas>,
+ * returning compact JPEG data URLs, timestamps, and dominant hex color swatches for Gemini keyframe analysis.
+ */
+export async function extractVideoKeyframes(
+  videoUrl: string,
+  frameCount = 5
+): Promise<{
+  width: number;
+  height: number;
+  durationSec: number;
+  keyframes: ExtractedVideoKeyframe[];
+}> {
+  return new Promise((resolve) => {
+    const video = document.createElement('video');
+    video.preload = 'auto';
+    video.muted = true;
+    video.playsInline = true;
+    video.crossOrigin = 'anonymous';
+    video.src = videoUrl;
+
+    let settled = false;
+    const finish = (result: {
+      width: number;
+      height: number;
+      durationSec: number;
+      keyframes: ExtractedVideoKeyframe[];
+    }) => {
+      if (settled) return;
+      settled = true;
+      video.pause();
+      video.removeAttribute('src');
+      resolve(result);
+    };
+
+    const timeoutId = window.setTimeout(() => {
+      finish({ width: 1280, height: 720, durationSec: 0, keyframes: [] });
+    }, 8500);
+
+    video.onerror = () => {
+      window.clearTimeout(timeoutId);
+      finish({ width: 1280, height: 720, durationSec: 0, keyframes: [] });
+    };
+
+    video.onloadedmetadata = async () => {
+      const width = video.videoWidth || 1280;
+      const height = video.videoHeight || 720;
+      const durationSec =
+        Number.isFinite(video.duration) && video.duration > 0
+          ? Number(video.duration.toFixed(2))
+          : 4;
+
+      const maxSide = 512;
+      const scale = Math.min(1, maxSide / Math.max(width, height));
+      const targetW = Math.max(160, Math.round(width * scale));
+      const targetH = Math.max(90, Math.round(height * scale));
+
+      const canvas = document.createElement('canvas');
+      canvas.width = targetW;
+      canvas.height = targetH;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) {
+        window.clearTimeout(timeoutId);
+        finish({ width, height, durationSec, keyframes: [] });
+        return;
+      }
+
+      const count = Math.max(2, Math.min(6, frameCount));
+      const keyframes: ExtractedVideoKeyframe[] = [];
+
+      const seekTo = (t: number) =>
+        new Promise<void>((res) => {
+          const onSeeked = () => {
+            video.removeEventListener('seeked', onSeeked);
+            res();
+          };
+          video.addEventListener('seeked', onSeeked, { once: true });
+          try {
+            video.currentTime = Math.min(Math.max(0.05, t), Math.max(0.05, durationSec - 0.08));
+          } catch {
+            video.removeEventListener('seeked', onSeeked);
+            res();
+          }
+        });
+
+      for (let i = 0; i < count; i++) {
+        const ratio = count === 1 ? 0.25 : i / (count - 1);
+        const timestampSec = Number((0.08 + ratio * Math.max(0.2, durationSec - 0.16)).toFixed(2));
+        await seekTo(timestampSec);
+
+        try {
+          ctx.drawImage(video, 0, 0, targetW, targetH);
+          const sample = ctx.getImageData(0, 0, targetW, targetH).data;
+          let rSum = 0;
+          let gSum = 0;
+          let bSum = 0;
+          let samples = 0;
+          const step = 16 * 4;
+          for (let p = 0; p < sample.length; p += step) {
+            rSum += sample[p];
+            gSum += sample[p + 1];
+            bSum += sample[p + 2];
+            samples++;
+          }
+          const r = samples > 0 ? Math.round(rSum / samples) : 48;
+          const g = samples > 0 ? Math.round(gSum / samples) : 96;
+          const b = samples > 0 ? Math.round(bSum / samples) : 168;
+          const dominantHex = `#${[r, g, b]
+            .map((v) => v.toString(16).padStart(2, '0'))
+            .join('')}`;
+
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.78);
+          keyframes.push({
+            index: i,
+            timestampSec,
+            dataUrl,
+            width: targetW,
+            height: targetH,
+            dominantHex,
+          });
+        } catch {
+          // Ignore canvas taint if any
+        }
+      }
+
+      window.clearTimeout(timeoutId);
+      finish({ width, height, durationSec, keyframes });
+    };
+  });
+}
+
 export async function ingestStudioFile(
   file: File,
   audioEngine: AudioEngine,
@@ -450,25 +582,11 @@ export async function ingestStudioFile(
     };
   }
 
-  // 3. Videos
+  // 3. Videos (with automatic keyframe extraction for Gemini scene pack synthesis)
   if (mime.startsWith('video/') || ['mp4', 'webm', 'mov'].includes(ext)) {
     const objectUrl = URL.createObjectURL(file);
-    const meta = await new Promise<{ width: number; height: number; durationSec: number }>(
-      (resolve) => {
-        const v = document.createElement('video');
-        v.preload = 'metadata';
-        v.muted = true;
-        v.src = objectUrl;
-        v.onloadedmetadata = () => {
-          resolve({
-            width: v.videoWidth || 1280,
-            height: v.videoHeight || 720,
-            durationSec: Number.isFinite(v.duration) ? Number(v.duration.toFixed(1)) : 0,
-          });
-        };
-        v.onerror = () => resolve({ width: 1280, height: 720, durationSec: 0 });
-      }
-    );
+    onStage?.('Sampling video keyframes & dominant color palette...');
+    const extracted = await extractVideoKeyframes(objectUrl, 5);
 
     return {
       id: uid('vid'),
@@ -478,9 +596,11 @@ export async function ingestStudioFile(
       sizeBytes: file.size,
       createdAt: Date.now(),
       objectUrl,
-      width: meta.width,
-      height: meta.height,
-      durationSec: meta.durationSec,
+      dataUrl: extracted.keyframes[0]?.dataUrl,
+      width: extracted.width,
+      height: extracted.height,
+      durationSec: extracted.durationSec,
+      extractedKeyframes: extracted.keyframes,
     };
   }
 
