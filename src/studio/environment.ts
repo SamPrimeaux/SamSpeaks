@@ -2,19 +2,24 @@ import * as THREE from 'three';
 import * as xb from 'xrblocks';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { RectAreaLightUniformsLib } from 'three/addons/lights/RectAreaLightUniformsLib.js';
-import { ATMOSPHERE_MAP, FINISH_MAP } from '../constants.ts';
+import { ATMOSPHERE_MAP, FINISH_MAP, SKY_PRESET_MAP } from '../constants.ts';
 import type {
   AtmosphereMoodId,
   AudioLevels,
   DynamicLightingState,
   EnvironmentLevelId,
+  ExtractedSurfaceTextureSpec,
   FinishId,
+  SkyPresetId,
+  SkySceneConfig,
+  SkyTriggerMode,
   StudioSubjectId,
   StudioSubjectInstance,
   TransitionType,
 } from '../types.ts';
 import { EnvironmentLevelManager } from './environmentLevels.ts';
 import { detectSoftwareWebGL, StudioMaterialLibrary } from './materials.ts';
+import { SkyGenerator } from './skyGenerator.ts';
 import { createStudioSubject } from './subjects.ts';
 import { createStudioTextures, type StudioTextureSet } from './textures.ts';
 
@@ -25,6 +30,7 @@ const SPECTRUM_COUNT = 32;
 const _scratchVec = new THREE.Vector3();
 const _dummy = new THREE.Object3D();
 const _color = new THREE.Color();
+const _skySampleColor = new THREE.Color();
 const _hsl = { h: 0, s: 0, l: 0 };
 const _targetFogColor = new THREE.Color(0x131314);
 const _targetKeyColor = new THREE.Color(0xfff0da);
@@ -37,6 +43,7 @@ export class StudioStage extends xb.Script {
   public textures!: StudioTextureSet;
   public materials!: StudioMaterialLibrary;
   public floorMesh!: THREE.Mesh;
+  public skyGenerator!: SkyGenerator;
 
   private envTexture: THREE.Texture | null = null;
   private keyLight!: THREE.DirectionalLight;
@@ -48,6 +55,9 @@ export class StudioStage extends xb.Script {
   private bgColor = new THREE.Color(0x131314);
 
   private stageGroup = new THREE.Group();
+  private pedestalGroup = new THREE.Group();
+  private micGroup = new THREE.Group();
+  private speakerGroup = new THREE.Group();
   private turntablePlatter = new THREE.Group();
   private subjectAnchor = new THREE.Group();
   private spectrumMesh!: THREE.InstancedMesh;
@@ -71,7 +81,7 @@ export class StudioStage extends xb.Script {
   private targetRimIntensity = 1.35;
   private targetSoftboxLeftIntensity = 4.2;
   private targetSoftboxRightIntensity = 3.0;
-  private targetFogDensity = 0.05;
+  private targetFogDensity = 0.032;
   private targetExposure = 1.12;
   private targetAmbientHue = 217;
   private currentAmbientHue = 217;
@@ -121,6 +131,9 @@ export class StudioStage extends xb.Script {
     this.textures = createStudioTextures(maxAnisotropy);
     this.materials = new StudioMaterialLibrary(this.textures, this.isSoftwareGl);
 
+    this.skyGenerator = new SkyGenerator();
+    this.add(this.skyGenerator.root);
+
     this.setupLighting();
     this.buildStageEnvironment();
     this.levelManager = new EnvironmentLevelManager(
@@ -138,11 +151,13 @@ export class StudioStage extends xb.Script {
   onXRSessionStarted(): void {
     if (xb.core.environmentBlendMode === 'alpha-blend') {
       xb.core.scene.background = null;
+      this.skyGenerator.root.visible = false;
     }
   }
 
   onXRSessionEnded(): void {
     xb.core.scene.background = this.bgColor;
+    this.skyGenerator.root.visible = true;
   }
 
   private trackGeo<T extends THREE.BufferGeometry>(geo: T): T {
@@ -197,7 +212,7 @@ export class StudioStage extends xb.Script {
       this.add(this.softboxRight);
     }
 
-    this.fog = new THREE.FogExp2(0x131314, 0.05);
+    this.fog = new THREE.FogExp2(0x131314, 0.032);
     xb.core.scene.fog = this.fog;
     xb.core.scene.background = this.bgColor;
   }
@@ -206,7 +221,6 @@ export class StudioStage extends xb.Script {
     this.stageGroup.position.copy(STAGE_POSITION);
     this.add(this.stageGroup);
 
-    // Expanded studio & adventure floor disc (radius 4.6m)
     const floorGeo = this.trackGeo(new THREE.CircleGeometry(4.6, 64));
     floorGeo.rotateX(-Math.PI / 2);
     this.floorMesh = new THREE.Mesh(floorGeo, this.materials.studioFloor);
@@ -233,39 +247,38 @@ export class StudioStage extends xb.Script {
   }
 
   private buildPedestal(): void {
-    const pedestal = new THREE.Group();
-    pedestal.name = 'StudioPedestal';
-    this.stageGroup.add(pedestal);
+    this.pedestalGroup.name = 'StudioPedestal';
+    this.stageGroup.add(this.pedestalGroup);
 
     const shadowGeo = this.trackGeo(new THREE.PlaneGeometry(1.05, 1.05));
     shadowGeo.rotateX(-Math.PI / 2);
     const shadow = new THREE.Mesh(shadowGeo, this.materials.contactShadow);
     shadow.position.y = 0.006;
-    pedestal.add(shadow);
+    this.pedestalGroup.add(shadow);
 
     const footGeo = this.trackGeo(new THREE.CylinderGeometry(0.28, 0.34, 0.08, 8));
     const foot = new THREE.Mesh(footGeo, this.materials.slatePlinth);
     foot.position.y = 0.04;
     foot.castShadow = true;
     foot.receiveShadow = true;
-    pedestal.add(foot);
+    this.pedestalGroup.add(foot);
 
     const colGeo = this.trackGeo(new THREE.CylinderGeometry(0.11, 0.16, 0.68, 32));
     const col = new THREE.Mesh(colGeo, this.materials.secondaryMetal);
     col.position.y = 0.42;
     col.castShadow = true;
     col.receiveShadow = true;
-    pedestal.add(col);
+    this.pedestalGroup.add(col);
 
     const collarGeo = this.trackGeo(new THREE.CylinderGeometry(0.29, 0.19, 0.09, 36));
     const collar = new THREE.Mesh(collarGeo, this.materials.walnutWood);
     collar.position.y = 0.79;
     collar.castShadow = true;
     collar.receiveShadow = true;
-    pedestal.add(collar);
+    this.pedestalGroup.add(collar);
 
     this.turntablePlatter.position.y = 0.855;
-    pedestal.add(this.turntablePlatter);
+    this.pedestalGroup.add(this.turntablePlatter);
 
     const platterRimGeo = this.trackGeo(new THREE.CylinderGeometry(0.32, 0.31, 0.048, 48));
     const platterRim = new THREE.Mesh(platterRimGeo, this.materials.secondaryMetal);
@@ -322,39 +335,38 @@ export class StudioStage extends xb.Script {
       this.spectrumMesh.instanceColor.needsUpdate = true;
     }
     this.spectrumMesh.computeBoundingSphere();
-    pedestal.add(this.spectrumMesh);
+    this.pedestalGroup.add(this.spectrumMesh);
   }
 
   private buildMicStandProp(): void {
-    const micGroup = new THREE.Group();
-    micGroup.name = 'StudioBoomMicrophone';
-    micGroup.position.set(-0.78, 0, -0.08);
-    micGroup.rotation.y = 0.45;
-    this.stageGroup.add(micGroup);
+    this.micGroup.name = 'StudioBoomMicrophone';
+    this.micGroup.position.set(-0.78, 0, -0.08);
+    this.micGroup.rotation.y = 0.45;
+    this.stageGroup.add(this.micGroup);
 
     const shadowGeo = this.trackGeo(new THREE.PlaneGeometry(0.46, 0.46));
     shadowGeo.rotateX(-Math.PI / 2);
     const shadow = new THREE.Mesh(shadowGeo, this.materials.contactShadow);
     shadow.position.y = 0.005;
-    micGroup.add(shadow);
+    this.micGroup.add(shadow);
 
     const baseGeo = this.trackGeo(new THREE.CylinderGeometry(0.13, 0.15, 0.032, 32));
     const base = new THREE.Mesh(baseGeo, this.materials.slatePlinth);
     base.position.y = 0.016;
     base.castShadow = true;
     base.receiveShadow = true;
-    micGroup.add(base);
+    this.micGroup.add(base);
 
     const shaftGeo = this.trackGeo(new THREE.CylinderGeometry(0.013, 0.018, 0.96, 16));
     const shaft = new THREE.Mesh(shaftGeo, this.materials.secondaryMetal);
     shaft.position.y = 0.5;
     shaft.castShadow = true;
-    micGroup.add(shaft);
+    this.micGroup.add(shaft);
 
     const jointGeo = this.trackGeo(new THREE.CylinderGeometry(0.025, 0.025, 0.045, 16));
     const joint = new THREE.Mesh(jointGeo, this.materials.heroMetal);
     joint.position.y = 0.98;
-    micGroup.add(joint);
+    this.micGroup.add(joint);
 
     const boomCurve = new THREE.CatmullRomCurve3([
       new THREE.Vector3(-0.14, 0.96, -0.08),
@@ -364,7 +376,7 @@ export class StudioStage extends xb.Script {
     const boomGeo = this.trackGeo(new THREE.TubeGeometry(boomCurve, 24, 0.01, 10, false));
     const boom = new THREE.Mesh(boomGeo, this.materials.secondaryMetal);
     boom.castShadow = true;
-    micGroup.add(boom);
+    this.micGroup.add(boom);
 
     const capsuleGroup = new THREE.Group();
     capsuleGroup.position.set(0.24, 1.07, 0.1);
@@ -382,39 +394,38 @@ export class StudioStage extends xb.Script {
     const head = new THREE.Mesh(headGeo, this.materials.micMesh);
     head.position.y = 0.045;
     capsuleGroup.add(mount, body, head);
-    micGroup.add(capsuleGroup);
+    this.micGroup.add(capsuleGroup);
 
     const popGeo = this.trackGeo(new THREE.TorusGeometry(0.056, 0.004, 10, 32));
     const pop = new THREE.Mesh(popGeo, this.materials.secondaryMetal);
     pop.position.set(0.3, 1.1, 0.14);
     pop.rotation.y = Math.PI / 3;
-    micGroup.add(pop);
+    this.micGroup.add(pop);
   }
 
   private buildSpeakerTowerProp(): void {
-    const tower = new THREE.Group();
-    tower.name = 'StudioMonitorSpeaker';
-    tower.position.set(0.78, 0, -0.08);
-    tower.rotation.y = -0.45;
-    this.stageGroup.add(tower);
+    this.speakerGroup.name = 'StudioMonitorSpeaker';
+    this.speakerGroup.position.set(0.78, 0, -0.08);
+    this.speakerGroup.rotation.y = -0.45;
+    this.stageGroup.add(this.speakerGroup);
 
     const shadowGeo = this.trackGeo(new THREE.PlaneGeometry(0.5, 0.5));
     shadowGeo.rotateX(-Math.PI / 2);
     const shadow = new THREE.Mesh(shadowGeo, this.materials.contactShadow);
     shadow.position.y = 0.005;
-    tower.add(shadow);
+    this.speakerGroup.add(shadow);
 
     const baseGeo = this.trackGeo(new THREE.BoxGeometry(0.28, 0.032, 0.26));
     const base = new THREE.Mesh(baseGeo, this.materials.slatePlinth);
     base.position.y = 0.016;
     base.castShadow = true;
-    tower.add(base);
+    this.speakerGroup.add(base);
 
     const standGeo = this.trackGeo(new THREE.CylinderGeometry(0.024, 0.032, 0.68, 16));
     const stand = new THREE.Mesh(standGeo, this.materials.secondaryMetal);
     stand.position.y = 0.36;
     stand.castShadow = true;
-    tower.add(stand);
+    this.speakerGroup.add(stand);
 
     const cabShape = new THREE.Shape();
     cabShape.moveTo(-0.11, -0.15);
@@ -436,12 +447,12 @@ export class StudioStage extends xb.Script {
     cabinet.position.y = 0.87;
     cabinet.castShadow = true;
     cabinet.receiveShadow = true;
-    tower.add(cabinet);
+    this.speakerGroup.add(cabinet);
 
     const baffleGeo = this.trackGeo(new THREE.BoxGeometry(0.2, 0.28, 0.016));
     const baffle = new THREE.Mesh(baffleGeo, this.materials.slatePlinth);
     baffle.position.set(0, 0.87, 0.112);
-    tower.add(baffle);
+    this.speakerGroup.add(baffle);
 
     const conePts = [
       new THREE.Vector2(0.014, 0.0),
@@ -452,18 +463,18 @@ export class StudioStage extends xb.Script {
     wooferGeo.rotateX(Math.PI / 2);
     const woofer = new THREE.Mesh(wooferGeo, this.materials.secondaryMetal);
     woofer.position.set(0, 0.81, 0.105);
-    tower.add(woofer);
+    this.speakerGroup.add(woofer);
 
     const tweeterGeo = this.trackGeo(new THREE.SphereGeometry(0.022, 20, 16));
     const tweeter = new THREE.Mesh(tweeterGeo, this.materials.heroMetal);
     tweeter.position.set(0, 0.945, 0.116);
     tweeter.scale.set(1, 1, 0.5);
-    tower.add(tweeter);
+    this.speakerGroup.add(tweeter);
 
     const vuGeo = this.trackGeo(new THREE.TorusGeometry(0.076, 0.005, 12, 36));
     this.speakerVuRing = new THREE.Mesh(vuGeo, this.materials.emissiveAccent);
     this.speakerVuRing.position.set(0, 0.81, 0.122);
-    tower.add(this.speakerVuRing);
+    this.speakerGroup.add(this.speakerVuRing);
   }
 
   public setSubject(id: StudioSubjectId): void {
@@ -483,12 +494,38 @@ export class StudioStage extends xb.Script {
     this.materials.applyFinish(FINISH_MAP[id]);
   }
 
+  /**
+   * Applies extracted procedural surface textures from a video keyframe analysis directly to the studio stage & sky.
+   */
+  public applyExtractedTextures(textures: ExtractedSurfaceTextureSpec[]): void {
+    for (const tex of textures) {
+      if (tex.surfaceRole === 'stage-floor') {
+        this.materials.studioFloor.color.set(tex.primaryHex);
+        this.materials.studioFloor.roughness = THREE.MathUtils.clamp(tex.roughness, 0.1, 0.95);
+        this.materials.studioFloor.metalness = THREE.MathUtils.clamp(tex.metalness, 0.0, 0.9);
+      } else if (tex.surfaceRole === 'hero-finish') {
+        this.materials.heroMetal.color.set(tex.primaryHex);
+        this.materials.heroMetal.roughness = THREE.MathUtils.clamp(tex.roughness, 0.08, 0.85);
+        this.materials.heroMetal.metalness = THREE.MathUtils.clamp(tex.metalness, 0.2, 0.98);
+        this.materials.emissiveAccent.color.set(tex.accentHex);
+        this.materials.emissiveAccent.emissive.set(tex.accentHex);
+      } else if (tex.surfaceRole === 'sky-cloud') {
+        this.applySkyConfig({
+          cloudPrimaryHex: tex.primaryHex,
+          cloudAccentHex: tex.secondaryHex,
+          sunHex: tex.accentHex,
+        });
+      }
+    }
+  }
+
   public setEnvironmentLevel(id: EnvironmentLevelId): void {
     this.currentEnvironmentId = id;
     this.levelManager?.setLevel(id);
     if (this.floorMesh) {
-      // Keep studio cyclorama textured disc for soundstage & subtle plinth base under other worlds
-      this.floorMesh.visible = id === 'studio-stage' || id === 'orbital-lab';
+      this.floorMesh.visible =
+        !this.skyGenerator.getConfig().immersiveSkyOnly &&
+        (id === 'studio-stage' || id === 'orbital-lab');
     }
   }
 
@@ -496,9 +533,48 @@ export class StudioStage extends xb.Script {
     return this.currentEnvironmentId;
   }
 
+  public setSkyPreset(presetId: SkyPresetId): SkySceneConfig {
+    const cfg = this.skyGenerator.setPreset(presetId);
+    this.syncImmersiveSkyVisibility(cfg.immersiveSkyOnly);
+    return cfg;
+  }
+
+  public applySkyConfig(patch: Partial<SkySceneConfig>, immediate = false): SkySceneConfig {
+    const cfg = this.skyGenerator.applyConfig(patch, immediate);
+    this.syncImmersiveSkyVisibility(cfg.immersiveSkyOnly);
+    return cfg;
+  }
+
+  public getSkyConfig(): SkySceneConfig {
+    return this.skyGenerator.getConfig();
+  }
+
+  public setSkyTriggerMode(mode: SkyTriggerMode): SkySceneConfig {
+    this.skyGenerator.setTriggerMode(mode);
+    return this.skyGenerator.getConfig();
+  }
+
+  public handleSkyPointerHover(nx: number, ny: number): void {
+    this.skyGenerator.handlePointerHover(nx, ny);
+  }
+
+  public handleSkyScrollDelta(deltaY: number): number {
+    return this.skyGenerator.handleScrollDelta(deltaY);
+  }
+
+  private syncImmersiveSkyVisibility(immersiveOnly: boolean): void {
+    this.stageGroup.visible = !immersiveOnly;
+    if (this.floorMesh) {
+      this.floorMesh.visible =
+        !immersiveOnly &&
+        (this.currentEnvironmentId === 'studio-stage' ||
+          this.currentEnvironmentId === 'orbital-lab');
+    }
+  }
+
   public setAtmosphereMood(id: AtmosphereMoodId, immediate = false): void {
     this.currentMoodId = id;
-    const preset = ATMOSPHERE_MAP[id];
+    const preset = ATMOSPHERE_MAP[id] || ATMOSPHERE_MAP.studio;
     _targetFogColor.setHex(preset.fogColor);
     _targetKeyColor.setHex(preset.keyColor);
     _targetHemiSky.setHex(preset.hemiSky);
@@ -514,7 +590,8 @@ export class StudioStage extends xb.Script {
     this.targetKeyIntensity = preset.keyIntensity;
     this.targetHemiIntensity = preset.hemiIntensity;
     this.targetRimIntensity = preset.rimIntensity;
-    this.targetFogDensity = preset.fogDensity;
+    // Lower fog density slightly so the sky dome & galaxies remain vivid
+    this.targetFogDensity = preset.fogDensity * 0.55;
     this.targetExposure = preset.exposure;
     this.syncSoftboxIntensities(preset.keyIntensity);
 
@@ -640,6 +717,7 @@ export class StudioStage extends xb.Script {
     this.targetKeyAngle = 0.65;
     this.setShadowSoftness(2.5);
     this.setAtmosphereMood('studio');
+    this.applySkyConfig({ immersiveSkyOnly: false });
   }
 
   private applyExplodeImmediate(amount: number): void {
@@ -654,6 +732,8 @@ export class StudioStage extends xb.Script {
     const damp = 1 - Math.exp(-8 * dt);
     const lightLambda = 3.6;
     const lightDamp = 1 - Math.exp(-lightLambda * dt);
+
+    this.skyGenerator.update(elapsed, dt, audio);
 
     this.currentExplode = THREE.MathUtils.damp(this.currentExplode, this.targetExplode, 8, dt);
     this.currentSpinSpeed = THREE.MathUtils.damp(
@@ -670,7 +750,6 @@ export class StudioStage extends xb.Script {
     );
     this.transitionPulse *= Math.exp(-6 * dt);
 
-    // Smoothly transition key, rim, softboxes, ambient HSL hue arc, and shadow softness
     this.keyLight.color.lerp(_targetKeyColor, lightDamp);
     this.keyLight.intensity = THREE.MathUtils.damp(
       this.keyLight.intensity,
@@ -755,10 +834,17 @@ export class StudioStage extends xb.Script {
       );
     }
 
-    this.fog.color.lerp(_targetFogColor, lightDamp);
+    // Blend horizon fog color subtly with active sky horizon color so outer space & clouds blend naturally
+    const skyCfg = this.skyGenerator.getConfig();
+    if (skyCfg.presetId !== 'studio-void') {
+      this.skyGenerator.sampleHorizonColor(_skySampleColor);
+      this.fog.color.lerp(_skySampleColor, lightDamp * 0.65);
+    } else {
+      this.fog.color.lerp(_targetFogColor, lightDamp);
+    }
     this.fog.density = THREE.MathUtils.damp(
       this.fog.density,
-      this.targetFogDensity,
+      skyCfg.immersiveSkyOnly ? 0.008 : this.targetFogDensity,
       lightLambda,
       dt
     );
@@ -814,6 +900,7 @@ export class StudioStage extends xb.Script {
       this.activeSubject.dispose();
       this.activeSubject = null;
     }
+    this.skyGenerator?.dispose();
     this.levelManager?.dispose();
     this.stageGeometries.forEach((g) => g.dispose());
     this.stageGeometries = [];

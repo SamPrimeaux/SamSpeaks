@@ -2,7 +2,9 @@ import * as THREE from 'three';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import * as xb from 'xrblocks';
 import type {
+  AudioLevels,
   BimSummary,
+  CharacterRigSpec,
   DroppedImageAsset,
   PlacedItemKind,
   SceneryPropType,
@@ -10,6 +12,7 @@ import type {
   SerializedSceneryItem,
   StudioMediaAsset,
 } from '../types.ts';
+import { buildProceduralCharacterRig } from './characterRig.ts';
 import { STAGE_POSITION } from './environment.ts';
 import type { StudioMaterialLibrary } from './materials.ts';
 import type { StudioTextureSet } from './textures.ts';
@@ -24,6 +27,8 @@ export interface PlacedPropItem {
   imageWidth?: number;
   imageHeight?: number;
   bimSummary?: BimSummary;
+  characterSpec?: CharacterRigSpec;
+  updateCharacter?: (elapsed: number, dt: number, audio: AudioLevels) => void;
   videoEl?: HTMLVideoElement;
   videoTexture?: THREE.VideoTexture;
   mixer?: THREE.AnimationMixer;
@@ -41,7 +46,7 @@ const _hitPoint = new THREE.Vector3();
 /**
  * Web-friendly 3D Scenery, Media, Model & BIM Manager.
  * Supports click-to-place, click-to-select, drag-to-move, inspector transforms,
- * 3D video screens, glTF AnimationMixer clips, BIM buildings, and serialization.
+ * 3D video screens, glTF AnimationMixer clips, BIM buildings, procedural cartoon characters, and serialization.
  */
 export class SceneryManager extends xb.Script {
   private materials: StudioMaterialLibrary;
@@ -52,6 +57,7 @@ export class SceneryManager extends xb.Script {
   private armedPlacement:
     | { kind: 'prop'; propType: SceneryPropType }
     | { kind: 'image'; asset: DroppedImageAsset }
+    | { kind: 'character'; spec: CharacterRigSpec }
     | null = null;
 
   private selectionRing!: THREE.Mesh;
@@ -110,6 +116,10 @@ export class SceneryManager extends xb.Script {
     this.armedPlacement = { kind: 'image', asset };
   }
 
+  public armCharacterPlacement(spec: CharacterRigSpec): void {
+    this.armedPlacement = { kind: 'character', spec };
+  }
+
   public clearArmedPlacement(): void {
     this.armedPlacement = null;
   }
@@ -146,6 +156,7 @@ export class SceneryManager extends xb.Script {
       scale: Number(item.group.scale.x.toFixed(2)),
       visible: item.group.visible,
       bimSummary: item.bimSummary,
+      characterSpec: item.characterSpec,
       videoPlaying: item.videoEl ? !item.videoEl.paused : undefined,
       videoMuted: item.videoEl ? item.videoEl.muted : undefined,
       animationClips: item.animations?.map((a, idx) => a.name || `Clip ${idx + 1}`),
@@ -281,6 +292,8 @@ export class SceneryManager extends xb.Script {
       if (!pt) return false;
       if (this.armedPlacement.kind === 'prop') {
         this.placePropAt(this.armedPlacement.propType, pt, Math.random() * Math.PI * 2);
+      } else if (this.armedPlacement.kind === 'character') {
+        this.placeCharacterRig(this.armedPlacement.spec, pt);
       } else {
         this.placeImageBackdrop(this.armedPlacement.asset, pt);
       }
@@ -586,10 +599,56 @@ export class SceneryManager extends xb.Script {
     return item;
   }
 
-  public updateScenery(dt: number): void {
+  public placeCharacterRig(
+    spec: CharacterRigSpec,
+    position?: THREE.Vector3,
+    notify = true
+  ): PlacedPropItem {
+    const id = `chr-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const existingChars = this.items.filter((i) => i.kind === 'character').length;
+    const offsetAngle = existingChars * 0.85 - 0.55;
+    const pos =
+      position ??
+      new THREE.Vector3(
+        STAGE_POSITION.x + Math.sin(offsetAngle) * 1.05 + (existingChars === 0 ? 0.82 : 0),
+        0,
+        STAGE_POSITION.z + Math.cos(offsetAngle) * 0.65 - 0.15
+      );
+
+    const built = buildProceduralCharacterRig(spec, this.materials);
+    built.group.position.set(pos.x, 0, pos.z);
+    built.group.lookAt(STAGE_POSITION.x, 0, STAGE_POSITION.z + 1.4);
+    this.propsRoot.add(built.group);
+
+    const item: PlacedPropItem = {
+      id,
+      kind: 'character',
+      label: spec.name.slice(0, 24),
+      group: built.group,
+      characterSpec: spec,
+      updateCharacter: built.update,
+      dispose: built.dispose,
+    };
+    this.items.push(item);
+    this.selectItem(id);
+    if (notify) this.onMutation?.();
+    return item;
+  }
+
+  public updateScenery(dt: number, elapsed = 0, audio?: AudioLevels): void {
+    const fallbackAudio: AudioLevels = audio ?? {
+      overall: 0,
+      low: 0,
+      mid: 0,
+      high: 0,
+      isPlaying: false,
+    };
     for (const item of this.items) {
       if (item.mixer && item.animationPlaying) {
         item.mixer.update(dt);
+      }
+      if (item.updateCharacter) {
+        item.updateCharacter(elapsed, dt, fallbackAudio);
       }
     }
   }
@@ -611,6 +670,7 @@ export class SceneryManager extends xb.Script {
       imageDataUrl: item.imageDataUrl,
       imageWidth: item.imageWidth,
       imageHeight: item.imageHeight,
+      characterSpec: item.characterSpec,
     }));
   }
 
@@ -630,6 +690,8 @@ export class SceneryManager extends xb.Script {
         entry.kind === 'arch'
       ) {
         created = this.placePropAt(entry.kind, pos, entry.rotationY, false);
+      } else if (entry.kind === 'character' && entry.characterSpec) {
+        created = this.placeCharacterRig(entry.characterSpec, pos, false);
       } else if (entry.kind === 'image' && entry.imageDataUrl) {
         created = this.placeImageBackdrop(
           {

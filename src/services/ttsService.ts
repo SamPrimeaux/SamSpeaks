@@ -1,10 +1,15 @@
 import type {
   AtmosphereMoodId,
   CameraShotId,
+  CharacterStudioResult,
+  CharacterStylePresetId,
   ComposeResponse,
   DroppedImageAsset,
+  ExtractedVideoKeyframe,
   MovieBeat,
+  ScenePackResult,
   StudioSubjectId,
+  StudioTemplateRecord,
   TransitionType,
   TtsMode,
   TtsRequest,
@@ -149,6 +154,10 @@ export async function composeWithMiniAgentSam(params: {
       explodeAmount: Number.isFinite(explodeNum)
         ? Math.max(0, Math.min(1, explodeNum))
         : 0,
+      skyProgression:
+        typeof b.skyProgression === 'number'
+          ? Math.max(0, Math.min(1, b.skyProgression))
+          : undefined,
     };
   });
 
@@ -156,6 +165,103 @@ export async function composeWithMiniAgentSam(params: {
     movieTitle: raw.movieTitle || 'miniAgentSam Story',
     beats,
   };
+}
+
+export async function fetchStudioTemplates(filters?: {
+  category?: string;
+  resource_kind?: string;
+  q?: string;
+}): Promise<StudioTemplateRecord[]> {
+  const query = new URLSearchParams();
+  if (filters?.category) query.set('category', filters.category);
+  if (filters?.resource_kind) query.set('resource_kind', filters.resource_kind);
+  if (filters?.q) query.set('q', filters.q);
+  const qs = query.toString();
+  const response = await fetch(`/api/templates${qs ? `?${qs}` : ''}`);
+  const data = (await response.json()) as {
+    templates?: StudioTemplateRecord[];
+    error?: string;
+  };
+  if (!response.ok) {
+    throw new Error(data.error || `Failed to load studio_templates (${response.status})`);
+  }
+  return Array.isArray(data.templates) ? data.templates : [];
+}
+
+export async function createStudioTemplate(
+  payload: Record<string, unknown>
+): Promise<StudioTemplateRecord> {
+  const response = await fetch('/api/templates', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = (await response.json()) as {
+    template?: StudioTemplateRecord;
+    error?: string;
+  };
+  if (!response.ok || !data.template) {
+    throw new Error(data.error || `Failed to create template (${response.status})`);
+  }
+  return data.template;
+}
+
+export async function deleteStudioTemplate(id: string): Promise<void> {
+  const response = await fetch(`/api/templates/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+  if (!response.ok) {
+    const data = (await response.json().catch(() => ({}))) as { error?: string };
+    throw new Error(data.error || `Failed to delete template (${response.status})`);
+  }
+}
+
+export async function exportStudioTemplatesSql(): Promise<string> {
+  const response = await fetch('/api/templates/export.sql');
+  if (!response.ok) {
+    throw new Error(`Failed to export studio_templates SQL (${response.status})`);
+  }
+  return response.text();
+}
+
+export async function generateCharacterFromMedia(params: {
+  prompt: string;
+  stylePreset: CharacterStylePresetId;
+  referenceImages: Array<{ mimeType: string; data: string; name?: string }>;
+  generatePortrait: boolean;
+  generateAnimationVideo: boolean;
+}): Promise<CharacterStudioResult> {
+  const response = await fetch('/api/agent/character-studio', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+  const data = (await response.json()) as CharacterStudioResult & { error?: string };
+  if (!response.ok || !data.character) {
+    throw new Error(data.error || `Character Studio failed (${response.status})`);
+  }
+  return data;
+}
+
+export async function generateScenePackFromVideoKeyframes(params: {
+  prompt: string;
+  videoName: string;
+  keyframes: ExtractedVideoKeyframe[];
+  generateCoverArt: boolean;
+  generateAnimationVideo: boolean;
+}): Promise<ScenePackResult> {
+  const response = await fetch('/api/agent/video-keyframe-pack', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+  const data = (await response.json()) as ScenePackResult & { error?: string };
+  if (!response.ok || !data.packSlug) {
+    throw new Error(
+      data.error || `Video keyframe scene pack extraction failed (${response.status})`
+    );
+  }
+  return data;
 }
 
 export function base64ToUint8Array(base64: string): Uint8Array {
